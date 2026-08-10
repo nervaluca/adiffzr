@@ -1,1 +1,62 @@
 
+name: Build macOS App
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Scarica il codice
+        uses: actions/checkout@v4
+
+      - name: Installa Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Installa le dipendenze
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller customtkinter reportlab pillow adif_io openpyxl pyserial skyfield sgp4 matplotlib
+
+      - name: Compila l'app
+        run: |
+          cd ADIF_FZR_Modular
+          pyinstaller --clean --noconfirm --windowed \
+            --name "ADIF FZR" \
+            --icon ../icon.icns \
+            --paths . \
+            --collect-all customtkinter \
+            --collect-all reportlab \
+            --collect-all adif_io \
+            --collect-all openpyxl \
+            --collect-all PIL \
+            --collect-all skyfield \
+            --collect-all sgp4 \
+            --collect-all matplotlib \
+            --hidden-import config \
+            --hidden-import radio.satellite \
+            --hidden-import radio.coastlines \
+            --hidden-import gui.dialogs.satellite \
+            --hidden-import gui.dialogs.sat_map \
+            --hidden-import matplotlib.backends.backend_tkagg \
+            main.py
+
+      - name: Crea il .dmg
+        run: |
+          cd ADIF_FZR_Modular/dist
+          mkdir dmg_root
+          cp -R "ADIF FZR.app" dmg_root/
+          ln -s /Applications dmg_root/Applications
+          hdiutil create -volname "ADIF FZR" -srcfolder dmg_root -ov -format UDZO "ADIF_FZR_2.5_Mac.dmg"
+
+      - name: Carica il .dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: ADIF_FZR_Mac
+          path: ADIF_FZR_Modular/dist/ADIF_FZR_2.5_Mac.dmg
