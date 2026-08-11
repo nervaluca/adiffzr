@@ -27,7 +27,7 @@ except Exception as _e:
     _MPL_OK = False
     _MPL_ERR = repr(_e)
 
-from config import locator_to_latlon, estrai_locator_da_testo
+from config import locator_to_latlon, estrai_locator_da_testo, T
 from radio import satellite as SAT
 try:
     from radio.coastlines import COSTE
@@ -153,6 +153,15 @@ class SatellitiDialog(ctk.CTkToplevel):
         self.menu_sat.pack(side="left", padx=6)
         ctk.CTkButton(selrow, text="Scegli…", width=70,
                       command=self._apri_selezione).pack(side="left")
+        # Ponte al logging: apre Aggiungi QSO col satellite selezionato,
+        # precompilando TX/RX/SAT_MODE dal database frequenze.
+        try:
+            _txt_log = T("aq_logga_sat")
+        except Exception:
+            _txt_log = "➕ Logga QSO"
+        ctk.CTkButton(selrow, text=_txt_log, width=110,
+                      fg_color="#276749", hover_color="#2F855A",
+                      command=self._logga_qso).pack(side="right")
 
         # pannello dati live
         self.box_live = ctk.CTkFrame(dx)
@@ -307,6 +316,33 @@ class SatellitiDialog(ctk.CTkToplevel):
     def _cambia_sat(self, nome):
         self._sat_corrente = nome
         self._calcola()
+
+    def _logga_qso(self):
+        """Apre Aggiungi QSO nell'app principale col satellite selezionato,
+        precompilando TX/RX/SAT_MODE dal database frequenze."""
+        nome = (getattr(self, "_sat_corrente", None) or self.var_sat.get() or "").strip()
+        if not nome or nome == "—":
+            messagebox.showinfo("Satellite", "Seleziona prima un satellite.",
+                                parent=self)
+            return
+        app = self.app_ref
+        if app is None or not hasattr(app, "logga_qso_da_satellite"):
+            messagebox.showwarning(
+                "Logging non disponibile",
+                "Impossibile raggiungere la finestra Aggiungi QSO.",
+                parent=self)
+            return
+        # La finestra satellite è modale (grab_set): senza rilasciare il grab
+        # la finestra Aggiungi QSO che si apre non riceverebbe i click.
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        try:
+            app.logga_qso_da_satellite(nome)
+        except Exception as e:
+            messagebox.showerror("Errore", f"Apertura Aggiungi QSO fallita:\n{e}",
+                                 parent=self)
 
     def _calcola(self, msg=""):
         coord = self._coord()

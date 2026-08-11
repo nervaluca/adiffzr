@@ -37,6 +37,7 @@ except ImportError:
     _PIL_OK = False
 
 from config import T, imposta_lingua, LINGUA, TRADUZIONI, MAPPA_CONTINENTI_DXCC, CONTINENTS_ORDER
+from config import VERSIONE, BUILD_DATE, APP_TITOLO, PROGRAMID_ADIF
 from utils.dxcc import dxcc_da_nominativo
 from utils.maidenhead import locator_to_latlon, distanza_bearing, bearing_to_compass, estrai_locator_da_testo
 from utils.formatting import chiedi_cartella_output
@@ -44,6 +45,7 @@ from utils.tooltip import _tip
 from radio.omnirig import OmniRigControl
 from radio.sdrconsole import SDRConsoleControl
 from radio.bandplan import modo_da_bandplan
+from radio import sat_db as SATDB
 from pdf.canvas import ElegantNumberedCanvas
 from net.wsjtx import WSJTXListener
 from net.dxcluster import DXClusterWindow
@@ -65,7 +67,7 @@ class ADIFtoPDFApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("ADIF FZR 2.5  —  IW1FZR")
+        self.title(f"{APP_TITOLO}  ·  build {BUILD_DATE}  —  IW1FZR")
         self.geometry("1100x850")
 
         self.minsize(1000, 750)
@@ -303,7 +305,7 @@ class ADIFtoPDFApp(ctk.CTk):
             frame.pack(fill="both", expand=True)
 
             ctk.CTkLabel(frame, text="📻", font=ctk.CTkFont(size=52)).pack(pady=(36,6))
-            ctk.CTkLabel(frame, text="ADIF FZR 2.5",
+            ctk.CTkLabel(frame, text=f"ADIF FZR {VERSIONE}",
                           font=ctk.CTkFont(size=24, weight="bold"),
                           text_color="#90CDF4").pack()
             ctk.CTkLabel(frame, text=T("dv_app_sottotit"),
@@ -819,7 +821,7 @@ class ADIFtoPDFApp(ctk.CTk):
         style.map("QSO.Treeview.Heading",
                   background=[("active", head_act)])
 
-        cols = ("n","data","utc","call","nome","banda","sat","prop","modo","contest","freq","rst_s","rst_r","country","state","locator","lotw","eqsl")
+        cols = ("n","data","utc","call","nome","banda","sat","prop","modo","contest","freq","rst_s","rst_r","country","state","locator","lotw","eqsl","banda_rx","freq_rx","sat_mode")
         self.tree = _ttv.Treeview(right, columns=cols, show="headings",
                                   style="QSO.Treeview", selectmode="extended")
 
@@ -827,10 +829,12 @@ class ADIFtoPDFApp(ctk.CTk):
                    "banda":"Banda","sat":"Satellite","prop":"Prop.",
                    "modo":"Mode","contest":"Contest","freq":"Freq.",
                    "rst_s":"RST TX","rst_r":"RST RX","country":"Country","state":"Stato",
-                   "locator":"Locator","lotw":"LoTW","eqsl":"eQSL"}
+                   "locator":"Locator","lotw":"LoTW","eqsl":"eQSL",
+                   "banda_rx":"Banda RX","freq_rx":"Freq. RX","sat_mode":"SAT Mode"}
         widths =  {"n":38,"data":75,"utc":52,"call":90,"nome":100,"banda":55,"sat":80,"prop":55,
                    "modo":55,"contest":80,"freq":65,"rst_s":52,"rst_r":52,"country":150,"state":55,
-                   "locator":65,"lotw":42,"eqsl":42}
+                   "locator":65,"lotw":42,"eqsl":42,
+                   "banda_rx":60,"freq_rx":70,"sat_mode":60}
         for c in cols:
             self.tree.heading(c, text=headers[c],
                               command=lambda _c=c: self._sort_tree(_c))
@@ -982,7 +986,7 @@ class ADIFtoPDFApp(ctk.CTk):
         self.sb_filt = ctk.CTkLabel(sb, text="",
                                     font=ctk.CTkFont(size=10), text_color="#F6AD55")
         self.sb_filt.pack(side="left", padx=8)
-        ctk.CTkLabel(sb, text="ADIF FZR 2.5  |  iw1fzr.it",
+        ctk.CTkLabel(sb, text=f"{APP_TITOLO} · build {BUILD_DATE}  |  iw1fzr.it",
                      font=ctk.CTkFont(size=10),
                      text_color="#4A6FA5").pack(side="right", padx=12)
         # Avvia il polling della radio per il display nella sidebar
@@ -1115,6 +1119,9 @@ class ADIFtoPDFApp(ctk.CTk):
                 str(qso.get('gridsquare','')).upper(),
                 "Y" if lotw_ok else "—",
                 "Y" if eqsl_ok else "—",
+                str(qso.get('band_rx','')).upper(),
+                str(qso.get('freq_rx','')),
+                str(qso.get('sat_mode','')).upper(),
             ))
         self._aggiorna_statusbar()
         self._ultima_riga_toggle = None
@@ -1951,6 +1958,9 @@ class ADIFtoPDFApp(ctk.CTk):
         ("qsl_via",        "QSL via",     10),
         ("sat_name",       "Satellite",   10),
         ("prop_mode",      "Prop.",         8),
+        ("band_rx",        "Banda RX",      8),
+        ("freq_rx",        "Freq. RX",      9),
+        ("sat_mode",       "SAT Mode",      8),
         ("contest_id",     "Contest",     10),
         ("stx",            "STX",          6),
         ("srx",            "SRX",          6),
@@ -2477,13 +2487,13 @@ class ADIFtoPDFApp(ctk.CTk):
         # Valori persistenti tra un'apertura e l'altra della finestra (e tra
         # un inserimento e l'altro nella stessa sessione).
         if not hasattr(self, '_addqso_ultimi'):
-            self._addqso_ultimi = {'banda': '20m', 'freq': '', 'modo': 'SSB', 'sat': '',
-                                   'sat_mode': '', 'band_rx': '', 'freq_rx': ''}
+            self._addqso_ultimi = {'banda': '20m', 'freq': '', 'modo': 'SSB', 'sat': ''}
 
         dlg = ctk.CTkToplevel(self)
         dlg.title(T("addqso_titolo"))
-        dlg.geometry("420x620")
-        dlg.resizable(False, False)
+        dlg.geometry("500x720")
+        dlg.resizable(False, True)
+        dlg.minsize(460, 520)
         dlg.lift(); dlg.focus_force()
         self._aggiungi_qso_dlg = dlg   # riferimento per precompilazione da DX Cluster
         dlg.attributes('-topmost', True)
@@ -2499,8 +2509,10 @@ class ADIFtoPDFApp(ctk.CTk):
         ctk.CTkLabel(dlg, textvariable=contatore_var, font=ctk.CTkFont(size=10),
                      text_color="gray").pack(pady=(0, 8))
 
-        form = ctk.CTkFrame(dlg, fg_color="transparent")
-        form.pack(fill="x", padx=24)
+        form = ctk.CTkScrollableFrame(dlg, fg_color="transparent")
+        # NB: il form viene "packato" più in basso, DOPO i pulsanti, così la
+        # barra pulsanti resta ancorata in fondo e sempre visibile anche su
+        # schermi piccoli o con DPI alto; il form scorre se non ci sta.
 
         # ── Data / Ora live ──────────────────────────
         ctk.CTkLabel(form, text=T("addqso_data"), anchor="w",
@@ -2609,11 +2621,48 @@ class ADIFtoPDFApp(ctk.CTk):
                                        wraplength=140, anchor="w")
         lbl_sat_status.grid(row=9, column=1, sticky="nw", padx=(8, 0), pady=(0, 6))
 
+        # Espone il campo Satellite per la precompilazione dal cruscotto tracking
+        dlg._aq_sat = e_sat
+
+        # ── Satellite: tratta RX (downlink) + SAT_MODE ───────────────
+        # Sempre visibili sotto il campo Satellite: si auto-compilano
+        # quando il satellite è noto nel database SAT_DB, e si azzerano
+        # se il satellite non è riconosciuto. Per i QSO non satellitari
+        # restano semplicemente vuoti (e non vengono scritti).
+        var_banda_rx = _tk.StringVar(value='')
+        ctk.CTkLabel(form, text=T("aq_sat_rx_hdr"), anchor="w",
+                     font=ctk.CTkFont(size=10, weight="bold"),
+                     text_color="#4A90D9").grid(row=14, column=0, columnspan=2,
+                                                sticky="w", pady=(6, 2))
+        ctk.CTkLabel(form, text=T("aq_sat_rx_banda"), anchor="w",
+                     font=ctk.CTkFont(size=11)).grid(row=15, column=0, sticky="w")
+        ctk.CTkLabel(form, text=T("aq_sat_rx_freq"), anchor="w",
+                     font=ctk.CTkFont(size=11)).grid(row=15, column=1, sticky="w", padx=(8, 0))
+        cb_banda_rx = ctk.CTkOptionMenu(form, values=BANDE, variable=var_banda_rx, width=140)
+        cb_banda_rx.grid(row=16, column=0, sticky="w", pady=(0, 6))
+        e_freq_rx = ctk.CTkEntry(form, width=140, placeholder_text="—")
+        e_freq_rx.grid(row=16, column=1, sticky="w", padx=(8, 0), pady=(0, 6))
+        ctk.CTkLabel(form, text=T("aq_sat_mode"), anchor="w",
+                     font=ctk.CTkFont(size=11)).grid(row=17, column=0, sticky="w")
+        e_sat_mode = ctk.CTkEntry(form, width=140, placeholder_text="V/U")
+        e_sat_mode.grid(row=18, column=0, sticky="w", pady=(0, 10))
+
+        def _pulisci_rx():
+            var_banda_rx.set('')
+            e_freq_rx.delete(0, 'end')
+            e_sat_mode.delete(0, 'end')
+
+        def _riempi_rx(dati):
+            var_banda_rx.set(dati['dn_band'])
+            e_freq_rx.delete(0, 'end'); e_freq_rx.insert(0, dati['dn_freq'])
+            e_sat_mode.delete(0, 'end'); e_sat_mode.insert(0, dati['mode'])
+
         def _verifica_satellite(*_a):
             sat_raw = e_sat.get().strip()
             if not sat_raw:
                 sat_status_var.set("")
                 lbl_sat_status.configure(text_color="gray")
+                _pulisci_rx()
                 return
             # Riconosce e normalizza varianti scritte senza spazi/trattini
             # per qualunque satellite noto (es. 'rs44' -> 'RS-44'), e le
@@ -2622,29 +2671,41 @@ class ADIFtoPDFApp(ctk.CTk):
             sat_upper = nome_canonico or sat_raw.upper()
             if nome_canonico and nome_canonico != sat_raw:
                 e_sat.delete(0, 'end'); e_sat.insert(0, nome_canonico)
+
+            # Satellite con dati completi nel database: auto-compila la
+            # coppia uplink/downlink e SAT_MODE, e mostra il pannello RX.
+            dati = self._info_satellite(sat_upper)
+            if dati:
+                # TX (uplink): proponi solo se l'utente non l'ha già
+                # personalizzato per questo stesso satellite in sessione.
+                if self._addqso_ultimi.get('sat', '').upper() != sat_upper:
+                    var_banda.set(dati['up_band'])
+                    e_freq.delete(0, 'end'); e_freq.insert(0, dati['up_freq'])
+                # RX (downlink) + SAT_MODE: sempre riallineati al satellite
+                _riempi_rx(dati)
+                sat_status_var.set(f"✓ {sat_upper} · {dati['mode']} · {dati['tipo']}")
+                lbl_sat_status.configure(text_color="#48BB78")
+                return
+
+            # Satellite noto solo come banda (vecchia tabella): niente RX.
             banda_tipica = self._banda_da_satellite(sat_upper)
             if banda_tipica:
                 sat_status_var.set(f"✓ {sat_upper} riconosciuto ({banda_tipica})")
                 lbl_sat_status.configure(text_color="#48BB78")
-                # Riconosciuto un satellite: apre da sé il pannello satellitare
-                # (downlink + modo) cosi' l'utente trova subito i campi pronti.
-                try:
-                    if not var_satmode_on.get():
-                        var_satmode_on.set(True)
-                except Exception:
-                    pass
-                # Propone banda/freq tipiche solo se l'utente non le ha già
-                # personalizzate per questo stesso satellite in questa sessione.
                 if self._addqso_ultimi.get('sat', '').upper() != sat_upper:
                     var_banda.set(banda_tipica)
                     freq_tipica = self._freq_da_banda(banda_tipica)
                     if freq_tipica:
                         e_freq.delete(0, 'end'); e_freq.insert(0, freq_tipica)
+                _pulisci_rx()
             else:
                 sat_status_var.set(T("addqso_sat_sconosciuto"))
                 lbl_sat_status.configure(text_color="#F6AD55")
+                _pulisci_rx()
         e_sat.bind("<KeyRelease>", _verifica_satellite)
         e_sat.bind("<FocusOut>", _verifica_satellite)
+        # Espone il verificatore per la precompilazione dal cruscotto tracking
+        dlg._aq_verifica_sat = _verifica_satellite
         if e_sat.get().strip():
             _verifica_satellite()
 
@@ -2664,60 +2725,6 @@ class ADIFtoPDFApp(ctk.CTk):
                      font=ctk.CTkFont(size=11)).grid(row=12, column=0, sticky="w")
         e_loc = ctk.CTkEntry(form, width=290, placeholder_text=T("aq_ph_loc"))
         e_loc.grid(row=13, column=0, columnspan=2, sticky="w", pady=(0, 14))
-
-        # ── Pannello MODALITÀ SATELLITE (downlink + modo transponder) ──
-        # I campi restano nascosti finché non si attiva la spunta o finché
-        # non viene riconosciuto un satellite. Servono per il logging
-        # satellitare completo: SAT_MODE, BAND_RX (downlink), FREQ_RX.
-        SAT_MODI = ['', 'V/U', 'U/V', 'U/U', 'V/V', 'L/U', 'U/L',
-                    'L/S', 'S/L', 'U/S', 'V/S']
-        var_satmode_on = _tk.BooleanVar(value=bool(self._addqso_ultimi.get('sat')))
-
-        chk_satmode = ctk.CTkCheckBox(
-            form, text="🛰 Modalità satellite (downlink RX + modo)",
-            variable=var_satmode_on, font=ctk.CTkFont(size=11),
-            checkbox_width=18, checkbox_height=18)
-        chk_satmode.grid(row=14, column=0, columnspan=2, sticky="w", pady=(0, 6))
-
-        # SAT_MODE (modo transponder) e BAND_RX (downlink)
-        lbl_satmode = ctk.CTkLabel(form, text="Modo sat (TX/RX)", anchor="w",
-                                   font=ctk.CTkFont(size=11))
-        lbl_bandrx = ctk.CTkLabel(form, text="Banda RX (downlink)", anchor="w",
-                                  font=ctk.CTkFont(size=11))
-        var_satmode = _tk.StringVar(value=self._addqso_ultimi.get('sat_mode', ''))
-        cb_satmode = ctk.CTkComboBox(form, values=SAT_MODI, variable=var_satmode, width=140)
-        var_bandrx = _tk.StringVar(value=self._addqso_ultimi.get('band_rx', ''))
-        cb_bandrx = ctk.CTkOptionMenu(form, values=[''] + BANDE, variable=var_bandrx, width=140)
-
-        # FREQ_RX (downlink)
-        lbl_freqrx = ctk.CTkLabel(form, text="Freq. RX (downlink MHz)", anchor="w",
-                                  font=ctk.CTkFont(size=11))
-        e_freqrx = ctk.CTkEntry(form, width=290,
-                                placeholder_text="frequenza di ricezione (downlink)")
-        if self._addqso_ultimi.get('freq_rx'):
-            e_freqrx.insert(0, self._addqso_ultimi['freq_rx'])
-
-        _sat_widgets = [(lbl_satmode, 15, 0, 1), (lbl_bandrx, 15, 1, 1),
-                        (cb_satmode, 16, 0, 1), (cb_bandrx, 16, 1, 1),
-                        (lbl_freqrx, 17, 0, 2), (e_freqrx, 18, 0, 2)]
-
-        def _mostra_pannello_sat(mostra):
-            for w, r, c, cs in _sat_widgets:
-                if mostra:
-                    px = (8, 0) if c == 1 else (0, 0)
-                    w.grid(row=r, column=c, columnspan=cs, sticky="w",
-                           padx=px, pady=(0, 6))
-                else:
-                    w.grid_remove()
-            # allarga/restringe la finestra per fare spazio ai campi
-            try:
-                dlg.geometry("420x780" if mostra else "420x620")
-            except Exception:
-                pass
-
-        var_satmode_on.trace_add("write",
-                                 lambda *a: _mostra_pannello_sat(var_satmode_on.get()))
-        _mostra_pannello_sat(var_satmode_on.get())
 
         n_inseriti = [0]
 
@@ -2744,16 +2751,16 @@ class ADIFtoPDFApp(ctk.CTk):
             if sat:
                 nuovo['sat_name'] = sat
                 nuovo['prop_mode'] = 'SAT'
-                # ── Campi satellitari aggiuntivi (downlink + modo transponder) ──
-                sat_mode = var_satmode.get().strip().upper()
-                if sat_mode:
-                    nuovo['sat_mode'] = sat_mode
-                band_rx = var_bandrx.get().strip()
-                if band_rx:
-                    nuovo['band_rx'] = band_rx
-                freq_rx = e_freqrx.get().strip()
-                if freq_rx:
-                    nuovo['freq_rx'] = freq_rx
+                # Tratta RX (downlink) + SAT_MODE, se compilati.
+                brx   = var_banda_rx.get().strip()
+                frx   = e_freq_rx.get().strip()
+                smode = e_sat_mode.get().strip().upper()
+                if brx:
+                    nuovo['band_rx'] = brx
+                if frx:
+                    nuovo['freq_rx'] = frx
+                if smode:
+                    nuovo['sat_mode'] = smode
             loc = e_loc.get().strip().upper()
             if loc:
                 nuovo['gridsquare'] = loc
@@ -2785,10 +2792,7 @@ class ADIFtoPDFApp(ctk.CTk):
 
             # Memorizza i valori persistenti per il prossimo inserimento
             self._addqso_ultimi = {'banda': banda, 'freq': freq,
-                                    'modo': var_modo.get().strip().upper(), 'sat': sat,
-                                    'sat_mode': var_satmode.get().strip().upper(),
-                                    'band_rx': var_bandrx.get().strip(),
-                                    'freq_rx': e_freqrx.get().strip()}
+                                    'modo': var_modo.get().strip().upper(), 'sat': sat}
 
             # Svuota i campi specifici del QSO, mantiene banda/freq/modo/sat
             e_call.delete(0, 'end')
@@ -2839,14 +2843,11 @@ class ADIFtoPDFApp(ctk.CTk):
                 if modo in MODI:
                     var_modo.set(modo)
 
-        _fr_radio = ctk.CTkFrame(dlg, fg_color="transparent")
-        _fr_radio.pack(fill="x", padx=24, pady=(0, 4))
-        ctk.CTkButton(_fr_radio, text=T("aq_leggi_radio"), command=_leggi_da_radio,
-                      fg_color="#2B6CB0", hover_color="#2C5282",
-                      height=32, font=ctk.CTkFont(size=12)).pack(fill="x")
-
+        # ── Barra inferiore FISSA: ancorata in fondo, sempre visibile
+        #    anche se il form è più alto della finestra (schermi piccoli /
+        #    DPI alto). Prima i pulsanti (side="bottom"), poi il form. ──
         frame_btn = ctk.CTkFrame(dlg, fg_color="transparent")
-        frame_btn.pack(fill="x", padx=24, pady=(0, 16))
+        frame_btn.pack(side="bottom", fill="x", padx=24, pady=(6, 16))
         ctk.CTkButton(frame_btn, text=T("addqso_btn_inserisci"), command=inserisci,
                       fg_color="#276749", hover_color="#2F855A",
                       height=40, font=ctk.CTkFont(size=13, weight="bold")
@@ -2854,8 +2855,47 @@ class ADIFtoPDFApp(ctk.CTk):
         ctk.CTkButton(frame_btn, text=T("addqso_btn_chiudi"), command=_on_close,
                       fg_color="#718096", height=40).pack(side="left", expand=True, fill="x")
 
+        _fr_radio = ctk.CTkFrame(dlg, fg_color="transparent")
+        _fr_radio.pack(side="bottom", fill="x", padx=24, pady=(0, 4))
+        ctk.CTkButton(_fr_radio, text=T("aq_leggi_radio"), command=_leggi_da_radio,
+                      fg_color="#2B6CB0", hover_color="#2C5282",
+                      height=32, font=ctk.CTkFont(size=12)).pack(fill="x")
+
+        # Il form scorrevole riempie lo spazio centrale rimasto.
+        form.pack(side="top", fill="both", expand=True, padx=20, pady=(0, 4))
+
         e_call.focus_set()
         dlg.bind("<Return>", lambda e: inserisci())
+
+    def logga_qso_da_satellite(self, sat_name):
+        """Apre (o riusa) la finestra Aggiungi QSO precompilando il
+        satellite: nome e — se noto nel database SAT_DB — banda/freq TX,
+        banda/freq RX e SAT_MODE (via _verifica_satellite). Pensato per il
+        pulsante 'Logga QSO' del cruscotto di tracking satellitare."""
+        if not sat_name:
+            return
+        canon = self._normalizza_nome_satellite(sat_name) or str(sat_name).strip().upper()
+        dlg = getattr(self, "_aggiungi_qso_dlg", None)
+        if dlg is None or not (hasattr(dlg, "winfo_exists") and dlg.winfo_exists()):
+            self.apri_aggiungi_qso()
+            dlg = getattr(self, "_aggiungi_qso_dlg", None)
+
+        def _riempi():
+            try:
+                if hasattr(dlg, "_aq_sat"):
+                    dlg._aq_sat.delete(0, 'end')
+                    dlg._aq_sat.insert(0, canon)
+                if hasattr(dlg, "_aq_verifica_sat"):
+                    dlg._aq_verifica_sat()   # auto-compila TX/RX/SAT_MODE
+                if hasattr(dlg, "_aq_call"):
+                    dlg._aq_call.focus_set()
+                try:
+                    dlg.lift(); dlg.focus_force()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        self.after(300, _riempi)
 
     def apri_calcolatore_distanza(self, locator_other_prefill=None):
         import tkinter as _tk
@@ -3301,6 +3341,9 @@ class ADIFtoPDFApp(ctk.CTk):
         ("locator", "Locator",   65,  "center"),
         ("lotw",    "LoTW",      42,  "center"),
         ("eqsl",    "eQSL",      42,  "center"),
+        ("banda_rx","Banda RX",  60,  "center"),
+        ("freq_rx", "Freq. RX",  70,  "center"),
+        ("sat_mode","SAT Mode",  60,  "center"),
     ]
     # Colonne nascoste di default
     _COLONNE_HIDDEN_DEFAULT = {"sat", "prop", "contest", "state"}
@@ -3471,8 +3514,8 @@ class ADIFtoPDFApp(ctk.CTk):
 
     def _about(self):
         from tkinter import messagebox as _mb
-        _mb.showinfo("ADIF FZR 2.5",
-            "ADIF FZR 2.5\nProfessional Ham Radio Logbook Utility\n\n"
+        _mb.showinfo(f"ADIF FZR {VERSIONE}",
+            f"ADIF FZR {VERSIONE}  build {BUILD_DATE}\nProfessional Ham Radio Logbook Utility\n\n"
             "Autore: IW1FZR — Luca\nhttps://iw1fzr.it\n\n"
             "CustomTkinter + ReportLab + openpyxl")
 
@@ -3565,19 +3608,36 @@ class ADIFtoPDFApp(ctk.CTk):
         satellite noto, anche se scritto senza spazi/trattini (es. 'rs44'
         -> 'RS-44', 'vo52' -> 'VO-52'). Per QO-100 gestisce anche le
         varianti testuali via _QO100_VARIANTI. Ritorna None se il nome
-        non corrisponde a nessun satellite noto."""
+        non corrisponde a nessun satellite noto.
+        Consulta prima il database frequenze SAT_DB (più ricco), poi la
+        vecchia tabellina _SAT_BAND per retrocompatibilità."""
         sat_raw = str(sat_name).strip()
         if not sat_raw:
             return None
+        # 1) database frequenze (RS-44, CAS-4A, JO-97, QO-100, ISS (ZARYA)…)
+        canon = SATDB.normalizza(sat_raw)
+        if canon:
+            return canon
+        # 2) fallback storico
         if self._QO100_VARIANTI.match(sat_raw):
             return "QO-100"
         chiave_compatta = re.sub(r'[\s\-]', '', sat_raw).upper()
         return self._SAT_NOME_CANONICO.get(chiave_compatta)
 
+    def _info_satellite(self, sat_name):
+        """Restituisce il dict up/down/mode/tipo del satellite dal database
+        frequenze (SAT_DB), o None se non noto. Chiavi: up_band, up_freq,
+        dn_band, dn_freq, mode, tipo, nome."""
+        return SATDB.info(sat_name)
+
     def _banda_da_satellite(self, sat_name):
-        """Restituisce la banda ADIF tipica (uplink) per un satellite noto,
+        """Restituisce la banda ADIF di uplink (TX) per un satellite noto,
         usata per correggere bande placeholder/non riconosciute (es. 'infm')
-        sui QSO satellitari. Vuoto se il satellite non è in elenco."""
+        sui QSO satellitari. Preferisce il database frequenze SAT_DB, con
+        fallback alla vecchia tabella. Vuoto se il satellite non è in elenco."""
+        b = SATDB.banda_uplink(sat_name)
+        if b:
+            return b
         return self._SAT_BAND.get(str(sat_name).upper().strip(), '')
 
     def _banda_non_valida(self, banda):
@@ -4191,7 +4251,8 @@ class ADIFtoPDFApp(ctk.CTk):
                 nl = chr(10)
                 with open(save_path, "w", encoding="utf-8") as fw:
                     fw.write("<ADIF_VER:5>3.1.4" + nl)
-                    fw.write("<PROGRAMID:12>ADIF_FZR_2.5" + nl)
+                    fw.write(f"<PROGRAMID:{len(PROGRAMID_ADIF)}>{PROGRAMID_ADIF}" + nl)
+                    fw.write(f"<PROGRAMVERSION:{len(VERSIONE)}>{VERSIONE}" + nl)
                     fw.write("<EOH>" + nl + nl)
                     for qso in qsos_exp:
                         for k, v in qso.items():
@@ -4514,7 +4575,7 @@ class ADIFtoPDFApp(ctk.CTk):
         m_help.add_command(label=T("menu_about"), command=self._about)
 
     def _aggiorna_lingua(self):
-        self.title(T("titolo_app"))
+        self.title(f"{APP_TITOLO}  ·  build {BUILD_DATE}  —  IW1FZR")
         self._crea_menubar()  # ricostruisce l'intera barra menu nella lingua corrente
 
         # Aggiorna i widget della sidebar principale (label e pulsanti tradotti)
@@ -5444,7 +5505,8 @@ class ADIFtoPDFApp(ctk.CTk):
         CAMPI_HEADER = {'adif_ver', 'programid', 'programversion', 'created_timestamp'}
         with open(path, "w", encoding="utf-8") as f:
             f.write("<ADIF_VER:5>3.1.4\n")
-            f.write("<PROGRAMID:12>ADIF_FZR_2.5\n")
+            f.write(f"<PROGRAMID:{len(PROGRAMID_ADIF)}>{PROGRAMID_ADIF}\n")
+            f.write(f"<PROGRAMVERSION:{len(VERSIONE)}>{VERSIONE}\n")
             f.write("<EOH>\n\n")
             for qso in qsos:
                 for k, v in qso.items():
@@ -6954,7 +7016,7 @@ class ADIFtoPDFApp(ctk.CTk):
     def _wizard_primo_avvio(self, prefill_call="", prefill_loc=""):
         """Popup wizard al primo avvio."""
         dlg = ctk.CTkToplevel(self)
-        dlg.title("ADIF FZR 2.5 — Benvenuto")
+        dlg.title(f"ADIF FZR {VERSIONE} — Benvenuto")
         dlg.geometry("420x400")
         dlg.resizable(False, False)
         dlg.grab_set(); dlg.lift(); dlg.focus_force()
