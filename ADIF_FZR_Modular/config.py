@@ -2,9 +2,8 @@ import os
 import sys
 
 _this_dir = os.path.dirname(os.path.abspath(__file__))
-_target_pkg = r'C:\Users\nerva\Desktop\printlog\innosetup3.2\ADIF_FZR_Modular'
-if _target_pkg not in sys.path:
-    sys.path.insert(0, _target_pkg)
+# NB: nessun percorso assoluto cablato qui — causava import dalla cartella
+# sbagliata tra PC diversi ("cartelle falocche"). Basta la cartella locale.
 if _this_dir not in sys.path:
     sys.path.insert(0, _this_dir)
 
@@ -12,6 +11,16 @@ import os
 import sys
 import json
 import customtkinter as ctk
+
+# ══ Versione applicazione — UNICA fonte di verità ══════════════
+# Aggiorna VERSIONE e BUILD_DATE a ogni ricompilazione, così dal
+# titolo/barra di stato capisci a colpo d'occhio se un PC ha le
+# ultime modifiche (fine delle 'cartelle falocche' tra dev e radio).
+VERSIONE = "2.5.1"
+BUILD_DATE = "2026-08-11-2"
+APP_TITOLO = "ADIF FZR " + VERSIONE
+PROGRAMID_ADIF = "ADIF_FZR_" + VERSIONE
+
 
 def _tema_iniziale():
     """Legge il tema salvato nel profilo default PRIMA di costruire la GUI,
@@ -546,6 +555,12 @@ TRADUZIONI = {
     "aq_ph_country":      {"IT": "es. Italy", "EN": "e.g. Italy"},
     "aq_ph_sat":          {"IT": "es. QO-100", "EN": "e.g. QO-100"},
     "aq_ph_loc":          {"IT": "es. JN45bj", "EN": "e.g. JN45bj"},
+    # ── Aggiungi QSO: pannello satellite (tratta RX + SAT_MODE) ──
+    "aq_sat_rx_hdr":      {"IT": "🛰 Satellite — tratta RX / modo", "EN": "🛰 Satellite — RX leg / mode"},
+    "aq_sat_rx_banda":    {"IT": "RX banda (downlink)", "EN": "RX band (downlink)"},
+    "aq_sat_rx_freq":     {"IT": "RX freq (MHz)", "EN": "RX freq (MHz)"},
+    "aq_sat_mode":        {"IT": "SAT_MODE (es. V/U)", "EN": "SAT_MODE (e.g. V/U)"},
+    "aq_logga_sat":       {"IT": "➕ Logga QSO", "EN": "➕ Log QSO"},
     # ── Dupe Check ──
     "dup_callsign":       {"IT": "Callsign", "EN": "Callsign"},
     "dup_toll_utc":       {"IT": "Tolleranza UTC entro", "EN": "UTC tolerance within"},
