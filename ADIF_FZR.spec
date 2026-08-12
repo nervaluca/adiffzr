@@ -25,14 +25,14 @@ hiddenimports += [
     "urllib.request", "urllib.parse", "email",
     "skyfield", "skyfield.api", "sgp4", "sgp4.api", "numpy",
     "matplotlib", "matplotlib.backends.backend_tkagg",
-    "config", "main",
+    "config", "main", "theme",
     "gui", "gui.main_window", "gui.widgets",
     "gui.dialogs", "gui.dialogs.charts", "gui.dialogs.dupe_check",
     "gui.dialogs.filters", "gui.dialogs.merge", "gui.dialogs.online_dialogs",
     "gui.dialogs.preferences", "gui.dialogs.qsl_designer", "gui.dialogs.satellite", "gui.dialogs.sat_map",
     "net", "net.dxcluster", "net.hamqth", "net.uploaders", "net.wsjtx",
     "pdf", "pdf.canvas",
-    "radio", "radio.bandplan", "radio.omnirig", "radio.sdrconsole", "radio.satellite", "radio.coastlines",
+    "radio", "radio.bandplan", "radio.omnirig", "radio.sdrconsole", "radio.satellite", "radio.coastlines", "radio.sat_db",
     "utils", "utils.dxcc", "utils.formatting", "utils.maidenhead", "utils.tooltip",
 ]
 
