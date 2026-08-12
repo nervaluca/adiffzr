@@ -36,7 +36,7 @@ hiddenimports += [
 
 # --- FORZA l'inclusione di TUTTI i tuoi moduli divisi ---
 hiddenimports += [
-    "config", "main",
+    "config", "main", "theme",
     "gui", "gui.main_window", "gui.widgets",
     "gui.dialogs", "gui.dialogs.charts", "gui.dialogs.dupe_check",
     "gui.dialogs.filters", "gui.dialogs.merge", "gui.dialogs.online_dialogs",
@@ -44,6 +44,8 @@ hiddenimports += [
     "net", "net.dxcluster", "net.hamqth", "net.uploaders", "net.wsjtx",
     "pdf", "pdf.canvas",
     "radio", "radio.bandplan", "radio.omnirig", "radio.sdrconsole",
+    "radio.satellite", "radio.sat_db",
+    "gui.dialogs.satellite", "gui.dialogs.sat_map",
     "utils", "utils.dxcc", "utils.formatting", "utils.maidenhead", "utils.tooltip",
 ]
 
