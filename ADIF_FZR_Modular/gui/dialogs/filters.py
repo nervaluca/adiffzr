@@ -9,6 +9,7 @@ if _this_dir not in sys.path:
     sys.path.insert(0, _this_dir)
 
 import customtkinter as ctk
+import theme as TH
 from config import T
 
 class FiltriDialog(ctk.CTkToplevel):
@@ -92,7 +93,7 @@ class FiltriDialog(ctk.CTkToplevel):
         frame_btn = ctk.CTkFrame(self, fg_color="transparent")
         frame_btn.pack(pady=12, fill="x", padx=20)
         ctk.CTkButton(frame_btn, text=T("filtri_applica"), command=self.applica,
-                      fg_color="#2B6CB0").pack(side="left", expand=True, padx=5)
+                      fg_color=TH.PRIMARY).pack(side="left", expand=True, padx=5)
         ctk.CTkButton(frame_btn, text=T("filtri_nessuno"), command=self.nessun_filtro,
                       fg_color="#718096").pack(side="left", expand=True, padx=5)
 

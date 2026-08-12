@@ -1286,7 +1286,10 @@ class SelezioneQSODialog(ctk.CTkToplevel):
         dlg = QSLCardDialog(self.app_ref, qsos_sel, self.stazione, self.colori_pdf)
 
     def destroy(self):
-        _ripristina_tema_ttk()
+        try:
+            _ripristina_tema_ttk()
+        except Exception:
+            pass
         super().destroy()
 
 
@@ -2487,7 +2490,10 @@ class QSLMasterDialog(ctk.CTkToplevel):
                 "Hai stampato etichette ma non hai salvato il file ADIF aggiornato.\nSalvare ora?"):
                 self._aggiorna_sent()
                 return
-        _ripristina_tema_ttk()
+        try:
+            _ripristina_tema_ttk()
+        except Exception:
+            pass
         super().destroy()
 
     def destroy(self):
@@ -2682,7 +2688,10 @@ class QSLCardDialog(ctk.CTkToplevel):
 
     def destroy(self):
         """Intercetta la chiusura e chiede se salvare."""
-        _ripristina_tema_ttk()
+        try:
+            _ripristina_tema_ttk()
+        except Exception:
+            pass
         if self._modifiche_pendenti:
             self._chiedi_salvataggio()
         else:

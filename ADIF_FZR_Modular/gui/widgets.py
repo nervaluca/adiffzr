@@ -10,6 +10,7 @@ if _this_dir not in sys.path:
 
 import tkinter as tk
 import customtkinter as ctk
+import theme as TH
 import calendar as _cal
 from datetime import datetime
 from config import T
@@ -242,14 +243,14 @@ class CalendarPopup(ctk.CTkToplevel):
         # Navigation header
         nav = ctk.CTkFrame(frame, fg_color="transparent")
         nav.pack(fill="x", padx=4, pady=4)
-        ctk.CTkButton(nav, text="◀", width=30, height=26, fg_color="#2B6CB0",
+        ctk.CTkButton(nav, text="◀", width=30, height=26, fg_color=TH.PRIMARY,
                       command=self._prev_month).pack(side="left", padx=2)
         nomi_mesi = T("nomi_mesi_it")
         mese_nome = nomi_mesi[self._month - 1] if isinstance(nomi_mesi, list) else str(self._month)
         self._lbl_header = ctk.CTkLabel(nav, text=f"{mese_nome} {self._year}",
                                          font=ctk.CTkFont(size=12, weight="bold"))
         self._lbl_header.pack(side="left", expand=True)
-        ctk.CTkButton(nav, text="▶", width=30, height=26, fg_color="#2B6CB0",
+        ctk.CTkButton(nav, text="▶", width=30, height=26, fg_color=TH.PRIMARY,
                       command=self._next_month).pack(side="right", padx=2)
 
         # Day-of-week headers

@@ -12,6 +12,7 @@ import os
 import re
 import adif_io
 import customtkinter as ctk
+import theme as TH
 from tkinter import filedialog, messagebox
 import tkinter.ttk as _ttk
 from config import T
@@ -36,7 +37,7 @@ class UnisciDialog(ctk.CTkToplevel):
         frame_ok.pack(side="bottom", pady=8, fill="x", padx=20)
         ctk.CTkButton(frame_ok, text=T("unisci_e_carica"),
                       command=self.unisci,
-                      fg_color="#276749", hover_color="#2F855A", height=38
+                      fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS, height=38
                       ).pack(side="left", expand=True, padx=(0,6), fill="x")
         ctk.CTkButton(frame_ok, text=T("unisci_e_salva"),
                       command=lambda: self.unisci(salva=True),
@@ -63,7 +64,7 @@ class UnisciDialog(ctk.CTkToplevel):
         frame_btn_lista = ctk.CTkFrame(frame_lista, fg_color="transparent")
         frame_btn_lista.pack(fill="x", padx=10, pady=6)
         ctk.CTkButton(frame_btn_lista, text=T("unisci_aggiungi_file"),
-                      command=self.aggiungi_file, fg_color="#2B6CB0", width=140
+                      command=self.aggiungi_file, fg_color=TH.PRIMARY, width=140
                       ).pack(side="left", padx=(0,8))
         ctk.CTkButton(frame_btn_lista, text=T("unisci_aggiungi_cbr"),
                       command=self.aggiungi_cbr, fg_color="#4A5568", width=140
@@ -324,12 +325,12 @@ class UnisciDialog(ctk.CTkToplevel):
             risultato[0] = manuale if manuale else scelta.get()
             dlg.destroy()
         ctk.CTkButton(dlg, text=T("conferma_btn"), command=conferma,
-                      fg_color="#276749", height=38, width=160).pack(
+                      fg_color=TH.SUCCESS_H, height=38, width=160).pack(
                       side="bottom", pady=12)
 
         ctk.CTkLabel(dlg, text=T("call_difformi"),
                      font=ctk.CTkFont(size=12, weight="bold"),
-                     text_color="#C05621").pack(pady=10, padx=20)
+                     text_color=TH.WARNING_H).pack(pady=10, padx=20)
         ctk.CTkLabel(dlg, text=T("call_quale"),
                      font=ctk.CTkFont(size=11)).pack(pady=4)
 

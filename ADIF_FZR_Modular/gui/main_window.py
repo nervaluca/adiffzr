@@ -46,6 +46,7 @@ from radio.omnirig import OmniRigControl
 from radio.sdrconsole import SDRConsoleControl
 from radio.bandplan import modo_da_bandplan
 from radio import sat_db as SATDB
+import theme as TH
 from pdf.canvas import ElegantNumberedCanvas
 from net.wsjtx import WSJTXListener
 from net.dxcluster import DXClusterWindow
@@ -301,13 +302,13 @@ class ADIFtoPDFApp(ctk.CTk):
             splash.configure(fg_color=bg)
 
             frame = ctk.CTkFrame(splash, fg_color=bg, corner_radius=0,
-                                  border_width=1, border_color="#2B6CB0")
+                                  border_width=1, border_color=TH.PRIMARY)
             frame.pack(fill="both", expand=True)
 
             ctk.CTkLabel(frame, text="📻", font=ctk.CTkFont(size=52)).pack(pady=(36,6))
             ctk.CTkLabel(frame, text=f"ADIF FZR {VERSIONE}",
                           font=ctk.CTkFont(size=24, weight="bold"),
-                          text_color="#90CDF4").pack()
+                          text_color=TH.LINK).pack()
             ctk.CTkLabel(frame, text=T("dv_app_sottotit"),
                           font=ctk.CTkFont(size=12),
                           text_color="#63B3ED").pack(pady=(2,18))
@@ -555,7 +556,7 @@ class ADIFtoPDFApp(ctk.CTk):
         # Frequenza grande (VFO-A)
         self.sb_radio_freq = ctk.CTkLabel(radio_box, text="—.—————",
                                           font=ctk.CTkFont(size=26, weight="bold"),
-                                          text_color="#4ADE80", cursor="hand2")
+                                          text_color=TH.OK_TEXT, cursor="hand2")
         self.sb_radio_freq.pack(padx=10, pady=(0, 0))
         self.sb_radio_freq.bind("<Button-1>", lambda e: self._logga_da_barra_radio())
         # Modo e banda piccoli
@@ -563,7 +564,7 @@ class ADIFtoPDFApp(ctk.CTk):
         _rbot.pack(pady=(0, 6))
         self.sb_radio_mode = ctk.CTkLabel(_rbot, text="—",
                                           font=ctk.CTkFont(size=13, weight="bold"),
-                                          text_color="#60A5FA")
+                                          text_color=TH.PRIMARY)
         self.sb_radio_mode.pack(side="left", padx=(0, 10))
         self.sb_radio_band = ctk.CTkLabel(_rbot, text="—",
                                           font=ctk.CTkFont(size=13, weight="bold"),
@@ -623,7 +624,7 @@ class ADIFtoPDFApp(ctk.CTk):
         self._fil_data_da = ctk.CTkEntry(fr_da, placeholder_text="dd/mm/yyyy",
                                           font=ctk.CTkFont(size=10), height=26)
         self._fil_data_da.pack(side="left", expand=True, fill="x")
-        ctk.CTkButton(fr_da, text="📅", width=28, height=26, fg_color="#2B6CB0",
+        ctk.CTkButton(fr_da, text="📅", width=28, height=26, fg_color=TH.PRIMARY,
                       command=lambda: CalendarPopup(self, self._fil_data_da)
                       ).pack(side="left", padx=(3,0))
 
@@ -633,7 +634,7 @@ class ADIFtoPDFApp(ctk.CTk):
         self._fil_data_al = ctk.CTkEntry(fr_a, placeholder_text="dd/mm/yyyy",
                                           font=ctk.CTkFont(size=10), height=26)
         self._fil_data_al.pack(side="left", expand=True, fill="x")
-        ctk.CTkButton(fr_a, text="📅", width=28, height=26, fg_color="#2B6CB0",
+        ctk.CTkButton(fr_a, text="📅", width=28, height=26, fg_color=TH.PRIMARY,
                       command=lambda: CalendarPopup(self, self._fil_data_al)
                       ).pack(side="left", padx=(3,0))
 
@@ -668,18 +669,18 @@ class ADIFtoPDFApp(ctk.CTk):
         fr_btns.pack(fill="x", pady=(6,0))
         _btn_applica = ctk.CTkButton(fr_btns, text=T("sb_fil_applica"),
                       command=self._applica_filtri_sidebar,
-                      height=28, fg_color="#2B6CB0", font=ctk.CTkFont(size=10)
+                      height=28, fg_color=TH.PRIMARY, font=ctk.CTkFont(size=10)
                       )
         _btn_applica.pack(side="left", expand=True, fill="x", padx=(0,3))
         self._sidebar_lang_refs.append((_btn_applica, "sb_fil_applica", None))
         ctk.CTkButton(fr_btns, text="✕",
                       command=self._reset_filtri_sidebar,
-                      height=28, width=32, fg_color="#9C4221",
+                      height=28, width=32, fg_color=TH.WARNING_H,
                       font=ctk.CTkFont(size=10)).pack(side="left")
 
         self.lbl_filtri_attivi = ctk.CTkLabel(left, text="",
                                                font=ctk.CTkFont(size=9),
-                                               text_color="#F6AD55", anchor="w")
+                                               text_color=TH.WARN_TEXT, anchor="w")
         self.lbl_filtri_attivi.pack(fill="x", padx=10, pady=(2,6))
 
         # ── 3b. PANNELLO DESTRO (griglia QSO) ─────────────────
@@ -710,7 +711,7 @@ class ADIFtoPDFApp(ctk.CTk):
             corner_radius=4)
         self.btn_sel_tutti.pack(side="left", padx=(8,4))
 
-        self.lbl_selezione = ctk.CTkLabel(tg, text="", text_color="#48BB78",
+        self.lbl_selezione = ctk.CTkLabel(tg, text="", text_color=TH.OK_TEXT,
                                           font=ctk.CTkFont(size=11, weight="bold"))
         self.lbl_selezione.pack(side="left", padx=8)
 
@@ -776,7 +777,7 @@ class ADIFtoPDFApp(ctk.CTk):
                       fg_color=("#C05621","#9C4221"), hover_color=("#9C4221","#7B3618"),
                       corner_radius=4).pack(side="right", padx=6, pady=5)
         self.lbl_filtri = ctk.CTkLabel(tg, text=T("nessun_filtro"),
-                                       text_color="#4299E1", font=ctk.CTkFont(size=11))
+                                       text_color=TH.PRIMARY, font=ctk.CTkFont(size=11))
         self.lbl_filtri.pack(side="right", padx=4)
 
         # Treeview Excel-style — adatta colori a tema
@@ -894,7 +895,7 @@ class ADIFtoPDFApp(ctk.CTk):
         self._widget_refs['ep_modifica'].pack(side="left", padx=10)
         self._ep_modifica_lbl = ctk.CTkLabel(ep_head, text=T("ep_seleziona"),
                                      font=ctk.CTkFont(size=10),
-                                     text_color="#90CDF4")
+                                     text_color=TH.LINK)
         self._ep_modifica_lbl.pack(side="left", padx=6)
         self._ep_info = self._ep_modifica_lbl
 
@@ -913,12 +914,12 @@ class ADIFtoPDFApp(ctk.CTk):
 
         self._widget_refs['ep_applica'] = ctk.CTkButton(ep_btns, text=T("ep_applica"),
                       command=self._ep_applica, width=90, height=28,
-                      fg_color="#276749", hover_color="#2F855A",
+                      fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS,
                       font=ctk.CTkFont(size=11, weight="bold"))
         self._widget_refs['ep_applica'].pack(side="left", padx=(0,4))
         self._widget_refs['ep_duplica'] = ctk.CTkButton(ep_btns, text=T("ep_duplica"),
                       command=self._ep_duplica, width=80, height=28,
-                      fg_color="#2B6CB0", hover_color="#3182CE",
+                      fg_color=TH.PRIMARY, hover_color=TH.PRIMARY,
                       font=ctk.CTkFont(size=11))
         self._widget_refs['ep_duplica'].pack(side="left", padx=4)
         self._widget_refs['ep_su'] = ctk.CTkButton(ep_btns, text=T("ep_su"),
@@ -933,7 +934,7 @@ class ADIFtoPDFApp(ctk.CTk):
         self._widget_refs['ep_giu'].pack(side="left", padx=4)
         self._widget_refs['ep_elimina'] = ctk.CTkButton(ep_btns, text=T("ep_elimina"),
                       command=self._ep_elimina, width=80, height=28,
-                      fg_color="#C05621", hover_color="#9C4221",
+                      fg_color=TH.WARNING_H, hover_color=TH.WARNING_H,
                       font=ctk.CTkFont(size=11))
         self._widget_refs['ep_elimina'].pack(side="left", padx=4)
         self._widget_refs['ep_colonna'] = ctk.CTkButton(ep_btns, text=T("ep_colonna"),
@@ -948,7 +949,7 @@ class ADIFtoPDFApp(ctk.CTk):
         self._widget_refs['ep_normalizza'].pack(side="left", padx=4)
         self._widget_refs['dist_calc_from_qso'] = ctk.CTkButton(ep_btns, text=T("dist_calc_from_qso"),
                       command=self._ep_calcola_distanza, width=140, height=28,
-                      fg_color="#2B6CB0", hover_color="#3182CE",
+                      fg_color=TH.PRIMARY, hover_color=TH.PRIMARY,
                       font=ctk.CTkFont(size=11))
         self._widget_refs['dist_calc_from_qso'].pack(side="left", padx=4)
 
@@ -975,16 +976,16 @@ class ADIFtoPDFApp(ctk.CTk):
         sb.pack_propagate(False)
 
         self.sb_qso  = ctk.CTkLabel(sb, text=T("dv_qso_dash"),
-                                    font=ctk.CTkFont(size=10), text_color="#90CDF4")
+                                    font=ctk.CTkFont(size=10), text_color=TH.LINK)
         self.sb_qso.pack(side="left", padx=12)
         self.sb_dxcc = ctk.CTkLabel(sb, text=T("dv_dxcc_dash"),
-                                    font=ctk.CTkFont(size=10), text_color="#90CDF4")
+                                    font=ctk.CTkFont(size=10), text_color=TH.LINK)
         self.sb_dxcc.pack(side="left", padx=8)
         self.sb_band = ctk.CTkLabel(sb, text=T("dv_bande_dash"),
-                                    font=ctk.CTkFont(size=10), text_color="#90CDF4")
+                                    font=ctk.CTkFont(size=10), text_color=TH.LINK)
         self.sb_band.pack(side="left", padx=8)
         self.sb_filt = ctk.CTkLabel(sb, text="",
-                                    font=ctk.CTkFont(size=10), text_color="#F6AD55")
+                                    font=ctk.CTkFont(size=10), text_color=TH.WARN_TEXT)
         self.sb_filt.pack(side="left", padx=8)
         ctk.CTkLabel(sb, text=f"{APP_TITOLO} · build {BUILD_DATE}  |  iw1fzr.it",
                      font=ctk.CTkFont(size=10),
@@ -1236,7 +1237,7 @@ class ADIFtoPDFApp(ctk.CTk):
             # Colore del pulsante SPLIT: acceso se attivo
             try:
                 if split_attivo:
-                    self.sb_btn_split.configure(fg_color="#DD6B20", hover_color="#C05621")
+                    self.sb_btn_split.configure(fg_color="#DD6B20", hover_color=TH.WARNING_H)
                 else:
                     self.sb_btn_split.configure(fg_color="#2D3748", hover_color="#4A5568")
             except Exception:
@@ -1249,9 +1250,9 @@ class ADIFtoPDFApp(ctk.CTk):
                 if getattr(self, "_radiobar_rx_calc", False):
                     # SDR Console / QO-100: la riga mostra la RX (downlink)
                     # calcolata dalla TX. Sempre accesa, in azzurro.
-                    self.sb_radio_vfob.configure(text_color="#60A5FA")
+                    self.sb_radio_vfob.configure(text_color=TH.PRIMARY)
                     self.sb_radio_lbl_b.configure(text="RX · downlink",
-                                                  text_color="#60A5FA")
+                                                  text_color=TH.PRIMARY)
                     # E l'etichetta della freq principale diventa "TX · uplink"
                     self.sb_radio_lbl_a.configure(text="TX · uplink")
                 elif split_attivo:
@@ -1419,7 +1420,7 @@ class ADIFtoPDFApp(ctk.CTk):
         tot = len(self.qsos_caricati)
         self.lbl_filtri.configure(
             text=f"[{col_name.upper()}={val}  {n}/{tot} QSO — Ctrl+Click per rimuovere]",
-            text_color="#F6AD55"
+            text_color=TH.WARN_TEXT
         )
         self.sb_filt.configure(text=f"Filtro rapido: {col_name.upper()}={val}")
         self._aggiorna_tree()
@@ -1591,7 +1592,7 @@ class ADIFtoPDFApp(ctk.CTk):
 
         if not risultati:
             ctk.CTkLabel(dlg, text=T("dv_no_mgr"),
-                         font=ctk.CTkFont(size=11), text_color="#F6AD55").pack(pady=20)
+                         font=ctk.CTkFont(size=11), text_color=TH.WARN_TEXT).pack(pady=20)
             ctk.CTkButton(dlg, text="🌐 Apri pagina web", height=30,
                           command=lambda: self._apri_url(url_sorgente)
                           ).pack(pady=4)
@@ -1614,10 +1615,10 @@ class ADIFtoPDFApp(ctk.CTk):
                 testo += f"   ({info})"
             ctk.CTkLabel(row, text=testo,
                          font=ctk.CTkFont(size=11, weight="bold" if manager == manager_piu_recente else "normal"),
-                         text_color="#48BB78" if manager == manager_piu_recente else "gray",
+                         text_color=TH.OK_TEXT if manager == manager_piu_recente else "gray",
                          anchor="w").pack(side="left", padx=8, pady=6, fill="x", expand=True)
             ctk.CTkButton(row, text=T("pref_usa"), width=50, height=26,
-                          fg_color="#276749", hover_color="#2F855A",
+                          fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS,
                           font=ctk.CTkFont(size=10),
                           command=lambda m=manager, d=dlg: self._applica_qsl_manager(m, qso_idx, d)
                           ).pack(side="right", padx=8, pady=4)
@@ -1629,11 +1630,11 @@ class ADIFtoPDFApp(ctk.CTk):
             ctk.CTkButton(frame_btn,
                 text=f"✔ Applica più recente: {manager_piu_recente}",
                 command=lambda: self._applica_qsl_manager(manager_piu_recente, qso_idx, dlg),
-                fg_color="#276749", hover_color="#2F855A", height=34,
+                fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS, height=34,
                 font=ctk.CTkFont(size=11, weight="bold")).pack(
                 side="left", expand=True, fill="x", padx=(0,6))
         ctk.CTkButton(frame_btn, text="🌐 Web", width=60, height=34,
-                      fg_color="#2B6CB0",
+                      fg_color=TH.PRIMARY,
                       command=lambda: self._apri_url(url_sorgente)).pack(side="left", padx=(0,6))
         ctk.CTkButton(frame_btn, text=T("cm_chiudi"), width=70, height=34,
                       fg_color="#718096", command=dlg.destroy).pack(side="left")
@@ -1820,7 +1821,7 @@ class ADIFtoPDFApp(ctk.CTk):
                 ctk.CTkLabel(row, text=desc, font=ctk.CTkFont(size=12),
                               anchor="w").pack(side="left", padx=10, pady=6, fill="x", expand=True)
                 ctk.CTkButton(row, text="✕", width=28, height=24,
-                              fg_color="#4A5568", hover_color="#9C4221",
+                              fg_color="#4A5568", hover_color=TH.WARNING_H,
                               command=lambda q=qso: (self._rimuovi_da_coda(q), ridisegna())
                               ).pack(side="right", padx=8)
 
@@ -1834,8 +1835,8 @@ class ADIFtoPDFApp(ctk.CTk):
         btn_esp.configure(command=lambda: self._menu_esporta_selezione(anchor_widget=btn_esp))
         btn_esp.pack(side="left", padx=(0,8))
         ctk.CTkButton(btns, text="🗑 Svuota coda", command=lambda: (self._deseleziona_qso(), dlg.destroy()),
-                      height=34, width=120, fg_color="#9C4221",
-                      hover_color="#7B3618").pack(side="left", padx=(0,8))
+                      height=34, width=120, fg_color=TH.WARNING_H,
+                      hover_color=TH.WARNING_H).pack(side="left", padx=(0,8))
         ctk.CTkButton(btns, text=T("cm_chiudi"), command=dlg.destroy,
                       height=34, width=90, fg_color="#4A5568",
                       hover_color="#2D3748").pack(side="right")
@@ -2026,7 +2027,7 @@ class ADIFtoPDFApp(ctk.CTk):
             e.insert(0, val)
             # Evidenzia campi satellite vuoti in arancione
             if tag == "sat_name" and not val:
-                e.configure(border_color="#F6AD55", border_width=2,
+                e.configure(border_color=TH.WARN_TEXT, border_width=2,
                             placeholder_text=T("dv_ph_so50"))
             self._ep_entries[tag] = e
             self._ep_field_labels[tag] = fl
@@ -2053,7 +2054,7 @@ class ADIFtoPDFApp(ctk.CTk):
         tot = len(self.qsos_caricati)
         self.lbl_filtri.configure(
             text=f"🔍 '{self.entry_search.get().strip()}'  {n}/{tot} QSO",
-            text_color="#4299E1"
+            text_color=TH.PRIMARY
         )
         self.sb_filt.configure(text=f"Ricerca: '{self.entry_search.get().strip()}'")
         self._aggiorna_tree()
@@ -2077,7 +2078,7 @@ class ADIFtoPDFApp(ctk.CTk):
         else:
             self.lbl_filtri_attivi.configure(
                 text=f"▶ {n_filt} / {n_tot} QSO visibili",
-                text_color="#F6AD55")
+                text_color=TH.WARN_TEXT)
         # Popola OptionMenu con i valori del log
         if hasattr(self, '_fil_banda_om') and self.qsos_caricati:
             bande = [T("filtri_tutte")] + sorted({str(q.get('band','')).upper().strip()
@@ -2684,14 +2685,14 @@ class ADIFtoPDFApp(ctk.CTk):
                 # RX (downlink) + SAT_MODE: sempre riallineati al satellite
                 _riempi_rx(dati)
                 sat_status_var.set(f"✓ {sat_upper} · {dati['mode']} · {dati['tipo']}")
-                lbl_sat_status.configure(text_color="#48BB78")
+                lbl_sat_status.configure(text_color=TH.OK_TEXT)
                 return
 
             # Satellite noto solo come banda (vecchia tabella): niente RX.
             banda_tipica = self._banda_da_satellite(sat_upper)
             if banda_tipica:
                 sat_status_var.set(f"✓ {sat_upper} riconosciuto ({banda_tipica})")
-                lbl_sat_status.configure(text_color="#48BB78")
+                lbl_sat_status.configure(text_color=TH.OK_TEXT)
                 if self._addqso_ultimi.get('sat', '').upper() != sat_upper:
                     var_banda.set(banda_tipica)
                     freq_tipica = self._freq_da_banda(banda_tipica)
@@ -2700,7 +2701,7 @@ class ADIFtoPDFApp(ctk.CTk):
                 _pulisci_rx()
             else:
                 sat_status_var.set(T("addqso_sat_sconosciuto"))
-                lbl_sat_status.configure(text_color="#F6AD55")
+                lbl_sat_status.configure(text_color=TH.WARN_TEXT)
                 _pulisci_rx()
         e_sat.bind("<KeyRelease>", _verifica_satellite)
         e_sat.bind("<FocusOut>", _verifica_satellite)
@@ -2849,7 +2850,7 @@ class ADIFtoPDFApp(ctk.CTk):
         frame_btn = ctk.CTkFrame(dlg, fg_color="transparent")
         frame_btn.pack(side="bottom", fill="x", padx=24, pady=(6, 16))
         ctk.CTkButton(frame_btn, text=T("addqso_btn_inserisci"), command=inserisci,
-                      fg_color="#276749", hover_color="#2F855A",
+                      fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS,
                       height=40, font=ctk.CTkFont(size=13, weight="bold")
                       ).pack(side="left", expand=True, fill="x", padx=(0, 6))
         ctk.CTkButton(frame_btn, text=T("addqso_btn_chiudi"), command=_on_close,
@@ -2858,7 +2859,7 @@ class ADIFtoPDFApp(ctk.CTk):
         _fr_radio = ctk.CTkFrame(dlg, fg_color="transparent")
         _fr_radio.pack(side="bottom", fill="x", padx=24, pady=(0, 4))
         ctk.CTkButton(_fr_radio, text=T("aq_leggi_radio"), command=_leggi_da_radio,
-                      fg_color="#2B6CB0", hover_color="#2C5282",
+                      fg_color=TH.PRIMARY, hover_color=TH.PRIMARY_H,
                       height=32, font=ctk.CTkFont(size=12)).pack(fill="x")
 
         # Il form scorrevole riempie lo spazio centrale rimasto.
@@ -3001,7 +3002,7 @@ class ADIFtoPDFApp(ctk.CTk):
 
         draw_compass()
 
-        lbl_err = ctk.CTkLabel(dlg, text="", text_color="#E53E3E",
+        lbl_err = ctk.CTkLabel(dlg, text="", text_color=TH.DANGER,
                                font=ctk.CTkFont(size=11), wraplength=360)
         lbl_err.pack(pady=(0,6))
 
@@ -3033,7 +3034,7 @@ class ADIFtoPDFApp(ctk.CTk):
         _calcola_ref[0] = calcola
 
         ctk.CTkButton(dlg, text=T("dist_calc_btn"), command=calcola,
-                      height=38, fg_color="#2B6CB0", hover_color="#3182CE",
+                      height=38, fg_color=TH.PRIMARY, hover_color=TH.PRIMARY,
                       font=ctk.CTkFont(size=14, weight="bold")).pack(fill="x", padx=24, pady=(0,16))
 
         # Calcola subito se entrambi i campi sono già popolati
@@ -3167,7 +3168,7 @@ class ADIFtoPDFApp(ctk.CTk):
         if not risultati:
             ctk.CTkLabel(header,
                 text=f"Analizzati {n_sat} QSO satellite — nessun problema rilevato. ✅",
-                font=ctk.CTkFont(size=12), text_color="#48BB78").pack(anchor="w", pady=(6,0))
+                font=ctk.CTkFont(size=12), text_color=TH.OK_TEXT).pack(anchor="w", pady=(6,0))
             ctk.CTkButton(dlg, text=T("cm_chiudi"), command=dlg.destroy,
                           height=34, width=100).pack(pady=20)
             return
@@ -3229,7 +3230,7 @@ class ADIFtoPDFApp(ctk.CTk):
                     # Nessuna correzione automatica disponibile: campo editabile
                     # direttamente qui, così non serve uscire dalla finestra.
                     idx_non_risolti.add(idx)
-                    ctk.CTkLabel(row, text="⚠", text_color="#F6AD55",
+                    ctk.CTkLabel(row, text="⚠", text_color=TH.WARN_TEXT,
                                   font=ctk.CTkFont(size=12, weight="bold")).pack(side="left", padx=(0,4))
                     ctk.CTkLabel(row, text=p['testo'],
                                   font=ctk.CTkFont(size=11),
@@ -3288,11 +3289,11 @@ class ADIFtoPDFApp(ctk.CTk):
                 messagebox.showerror(T("errore"), T("sat_export_errore", err=ex))
 
         ctk.CTkButton(btns, text="✔ Applica correzioni selezionate", command=applica,
-                      height=36, fg_color="#276749", hover_color="#2F855A",
+                      height=36, fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS,
                       font=ctk.CTkFont(size=12, weight="bold")).pack(side="left", padx=(0,8))
         if idx_non_risolti:
             ctk.CTkButton(btns, text=T("sat_btn_esporta"), command=esporta_non_risolti,
-                          height=36, fg_color="#C05621", hover_color="#9C4221",
+                          height=36, fg_color=TH.WARNING_H, hover_color=TH.WARNING_H,
                           font=ctk.CTkFont(size=12)).pack(side="left", padx=(0,8))
         ctk.CTkButton(btns, text=T("cm_annulla"), command=dlg.destroy,
                       height=36, width=100, fg_color="#4A5568",
@@ -3476,7 +3477,7 @@ class ADIFtoPDFApp(ctk.CTk):
         fr = ctk.CTkFrame(dlg, fg_color="transparent")
         fr.pack(fill="x", padx=14, pady=(0,14))
         ctk.CTkButton(fr, text="✔ Applica", command=_salva, height=34,
-                      fg_color="#276749", hover_color="#2F855A"
+                      fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS
                       ).pack(side="left", expand=True, fill="x", padx=(0,6))
         ctk.CTkButton(fr, text=T("cm_annulla"), command=dlg.destroy,
                       height=34, width=90, fg_color="#718096").pack(side="left")
@@ -3829,10 +3830,10 @@ class ADIFtoPDFApp(ctk.CTk):
         if n_sat_corretti:
             titolo_fase1 += T("completa_sat", n=n_sat_corretti)
         ctk.CTkLabel(ndlg, text=titolo_fase1, wraplength=500, justify="left",
-                     font=ctk.CTkFont(size=11, weight="bold"), text_color="#48BB78").pack(pady=(12,2), padx=20, anchor="w")
+                     font=ctk.CTkFont(size=11, weight="bold"), text_color=TH.OK_TEXT).pack(pady=(12,2), padx=20, anchor="w")
         if avviso_critici:
             ctk.CTkLabel(ndlg, text=avviso_critici.strip(),
-                         font=ctk.CTkFont(size=10, weight="bold"), text_color="#C05621",
+                         font=ctk.CTkFont(size=10, weight="bold"), text_color=TH.WARNING_H,
                          justify="left", wraplength=500).pack(padx=20, pady=(0,6), anchor="w")
         ctk.CTkLabel(ndlg,
                      text=T("completa_spiega", n=len(campi_assenti)),
@@ -3880,7 +3881,7 @@ class ADIFtoPDFApp(ctk.CTk):
             if on_done:
                 on_done()
         ctk.CTkButton(frame_btn, text=T("completa_btn_applica"), command=applica_default,
-                      fg_color="#276749", height=36).pack(side="left", expand=True, padx=(0,6), fill="x")
+                      fg_color=TH.SUCCESS_H, height=36).pack(side="left", expand=True, padx=(0,6), fill="x")
         ctk.CTkButton(frame_btn, text=T("completa_btn_chiudi"),
                       command=_solo_chiudi,
                       fg_color="#718096", height=36).pack(side="left", expand=True, fill="x")
@@ -3986,7 +3987,7 @@ class ADIFtoPDFApp(ctk.CTk):
             fbe = ctk.CTkFrame(edlg, fg_color="transparent")
             fbe.pack(fill="x", padx=15, pady=8)
             ctk.CTkButton(fbe, text=T("cm_salva"), command=salva_mod,
-                          fg_color="#276749", height=34).pack(side="left", expand=True, padx=(0,6), fill="x")
+                          fg_color=TH.SUCCESS_H, height=34).pack(side="left", expand=True, padx=(0,6), fill="x")
             ctk.CTkButton(fbe, text=T("cm_annulla"),
                           command=lambda: [edlg.destroy(), dlg.lift(), dlg.focus_force()],
                           fg_color="#718096", height=34).pack(side="left", expand=True, fill="x")
@@ -4074,7 +4075,7 @@ class ADIFtoPDFApp(ctk.CTk):
             frame_btn = ctk.CTkFrame(cdlg, fg_color="transparent")
             frame_btn.pack(fill="x", padx=20, pady=10)
             ctk.CTkButton(frame_btn, text=T("editor_applica"), command=applica_col,
-                          fg_color="#276749", height=34).pack(side="left", expand=True, padx=(0,6), fill="x")
+                          fg_color=TH.SUCCESS_H, height=34).pack(side="left", expand=True, padx=(0,6), fill="x")
             ctk.CTkButton(frame_btn, text=T("cm_annulla"),
                           command=lambda: [cdlg.destroy(), dlg.lift(), dlg.focus_force()],
                           fg_color="#718096", height=34).pack(side="left", expand=True, fill="x")
@@ -4198,7 +4199,7 @@ class ADIFtoPDFApp(ctk.CTk):
             frame_btn = ctk.CTkFrame(cdlg, fg_color="transparent")
             frame_btn.pack(fill="x", padx=15, pady=8)
             ctk.CTkButton(frame_btn, text=T("dv_genera_cbr"), command=genera_cbr,
-                          fg_color="#276749", height=34).pack(side="left", expand=True, padx=(0,6), fill="x")
+                          fg_color=TH.SUCCESS_H, height=34).pack(side="left", expand=True, padx=(0,6), fill="x")
             ctk.CTkButton(frame_btn, text=T("cm_annulla"),
                           command=lambda: [cdlg.destroy(), dlg.lift(), dlg.focus_force()],
                           fg_color="#718096", height=34).pack(side="left", expand=True, fill="x")
@@ -4295,10 +4296,10 @@ class ADIFtoPDFApp(ctk.CTk):
                      font=ctk.CTkFont(size=12, weight="bold"))
         lbl_count.pack(side="left", padx=10)
         _b = ctk.CTkButton(frame_tb, text=T("editor_modifica"), command=modifica_cella,
-                      width=90, height=28, fg_color="#2B6CB0"); _b.pack(side="left", padx=2)
+                      width=90, height=28, fg_color=TH.PRIMARY); _b.pack(side="left", padx=2)
         _tip(_b, T("tip_modifica"))
         _b = ctk.CTkButton(frame_tb, text=T("editor_cancella"), command=cancella_righe,
-                      width=90, height=28, fg_color="#C05621"); _b.pack(side="left", padx=2)
+                      width=90, height=28, fg_color=TH.WARNING_H); _b.pack(side="left", padx=2)
         _tip(_b, T("tip_cancella"))
         _b = ctk.CTkButton(frame_tb, text=T("editor_duplica"), command=duplica_riga,
                       width=90, height=28, fg_color="#4A5568"); _b.pack(side="left", padx=2)
@@ -4310,22 +4311,22 @@ class ADIFtoPDFApp(ctk.CTk):
                       width=100, height=28, fg_color="#4A5568"); _b.pack(side="left", padx=2)
         _tip(_b, T("tip_normalizza"))
         _b = ctk.CTkButton(frame_tb, text=T("editor_su"), command=sposta_su,
-                      width=55, height=28, fg_color="#276749"); _b.pack(side="left", padx=2)
+                      width=55, height=28, fg_color=TH.SUCCESS_H); _b.pack(side="left", padx=2)
         _tip(_b, T("tip_su"))
         _b = ctk.CTkButton(frame_tb, text=T("editor_giu"), command=sposta_giu,
-                      width=55, height=28, fg_color="#276749"); _b.pack(side="left", padx=2)
+                      width=55, height=28, fg_color=TH.SUCCESS_H); _b.pack(side="left", padx=2)
         _tip(_b, T("tip_giu"))
         _b = ctk.CTkButton(frame_tb, text=T("editor_applica"), command=salva_modifiche,
                       width=80, height=28, fg_color="#4A5568"); _b.pack(side="left", padx=10)
         _tip(_b, T("tip_applica"))
         _b = ctk.CTkButton(frame_tb, text=T("editor_esporta"), command=esporta_selezionati,
-                      width=100, height=28, fg_color="#276749"); _b.pack(side="left", padx=2)
+                      width=100, height=28, fg_color=TH.SUCCESS_H); _b.pack(side="left", padx=2)
         _tip(_b, T("tip_esporta_sel"))
         _b = ctk.CTkButton(frame_tb, text=T("editor_cbr"), command=esporta_cabrillo,
                       width=100, height=28, fg_color="#4A5568"); _b.pack(side="left", padx=2)
         _tip(_b, T("tip_cbr"))
         _b = ctk.CTkButton(frame_tb, text=T("dv_import_cbr"), command=lambda: importa_cabrillo_editor(dlg, cols),
-                      width=90, height=28, fg_color="#2B6CB0"); _b.pack(side="left", padx=2)
+                      width=90, height=28, fg_color=TH.PRIMARY); _b.pack(side="left", padx=2)
         _b = ctk.CTkButton(frame_tb, text=T("editor_chiudi"), command=chiudi,
                       width=80, height=28, fg_color="#718096"); _b.pack(side="right", padx=10)
         _tip(_b, T("tip_chiudi"))
@@ -4696,7 +4697,7 @@ class ADIFtoPDFApp(ctk.CTk):
             if n == tot:
                 self.lbl_filtri.configure(text=T("nessun_filtro"), text_color="gray")
             else:
-                self.lbl_filtri.configure(text=T("filtro_attivo", n=n, tot=tot), text_color="#48BB78")
+                self.lbl_filtri.configure(text=T("filtro_attivo", n=n, tot=tot), text_color=TH.OK_TEXT)
             self._aggiorna_tree()
 
     def apri_colori(self):
@@ -5000,7 +5001,7 @@ class ADIFtoPDFApp(ctk.CTk):
                         font=ctk.CTkFont(size=11)).pack(pady=(10,4))
 
         lbl_esito = ctk.CTkLabel(dlg, text="", font=ctk.CTkFont(size=11),
-                                  text_color="#48BB78")
+                                  text_color=TH.OK_TEXT)
         lbl_esito.pack(pady=2)
 
         def _esegui():
@@ -5044,7 +5045,7 @@ class ADIFtoPDFApp(ctk.CTk):
         fr = ctk.CTkFrame(dlg, fg_color="transparent")
         fr.pack(fill="x", padx=30, pady=16)
         ctk.CTkButton(fr, text=T("imp_importa"), command=_esegui, height=38,
-                      fg_color="#276749", hover_color="#2F855A"
+                      fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS
                       ).pack(side="left", expand=True, fill="x", padx=(0,6))
         ctk.CTkButton(fr, text=T("imp_annulla"), command=dlg.destroy,
                       height=38, width=100, fg_color="#718096").pack(side="left")
@@ -5806,7 +5807,7 @@ class ADIFtoPDFApp(ctk.CTk):
                 self.qsos_caricati = sorted(qsos, key=lambda x: (x.get('qso_date', ''), x.get('time_on', '')))
                 self.qsos_filtrati = list(self.qsos_caricati)
                 nome = os.path.basename(path)
-                self.lbl_status.configure(text=T("caricato_status", nome=nome, count=len(self.qsos_caricati)), text_color="#3182CE")
+                self.lbl_status.configure(text=T("caricato_status", nome=nome, count=len(self.qsos_caricati)), text_color=TH.PRIMARY)
                 self.lbl_filtri.configure(text=T("nessun_filtro"), text_color="gray")
                 self._aggiungi_storico(path)
             except Exception as ex:
@@ -5822,7 +5823,7 @@ class ADIFtoPDFApp(ctk.CTk):
             ctk.CTkLabel(fr, text=cartella, font=ctk.CTkFont(size=10),
                          text_color="gray", anchor="w").pack(side="left", padx=4)
             ctk.CTkButton(fr, text=T("apri"), width=60, height=26,
-                          fg_color="#2B6CB0",
+                          fg_color=TH.PRIMARY,
                           command=lambda p=path: carica_da_storico(p)).pack(side="right", padx=8, pady=4)
 
         ctk.CTkButton(dlg, text=T("chiudi"), command=dlg.destroy,
@@ -5956,7 +5957,7 @@ class ADIFtoPDFApp(ctk.CTk):
         frame_btn = ctk.CTkFrame(dlg, fg_color="transparent")
         frame_btn.pack(fill="x", padx=20, pady=10)
         ctk.CTkButton(frame_btn, text=T("conferma_btn"), command=salva,
-                      fg_color="#276749", height=34).pack(side="left", expand=True, padx=(0,6), fill="x")
+                      fg_color=TH.SUCCESS_H, height=34).pack(side="left", expand=True, padx=(0,6), fill="x")
         ctk.CTkButton(frame_btn, text=T("cm_annulla"), command=dlg.destroy,
                       fg_color="#718096", height=34).pack(side="left", expand=True, fill="x")
         dlg.wait_window()
@@ -5998,7 +5999,7 @@ class ADIFtoPDFApp(ctk.CTk):
         frame_btns = ctk.CTkFrame(parent, fg_color="transparent")
         frame_btns.pack(fill="x", padx=4, pady=(0,4))
         ctk.CTkButton(frame_btns, text=T("cm_applica"), command=self._applica_filtri_inline,
-                      height=26, fg_color="#2B6CB0", font=ctk.CTkFont(size=10)
+                      height=26, fg_color=TH.PRIMARY, font=ctk.CTkFont(size=10)
                       ).pack(side="left", expand=True, fill="x", padx=(0,4))
         ctk.CTkButton(frame_btns, text=T("cm_reset"), command=self._reset_filtri_inline,
                       height=26, fg_color="#4A5568", font=ctk.CTkFont(size=10), width=60
@@ -6240,7 +6241,7 @@ class ADIFtoPDFApp(ctk.CTk):
         frame_btn = ctk.CTkFrame(dlg, fg_color="transparent")
         frame_btn.pack(fill="x", padx=16, pady=(0,16))
         ctk.CTkButton(frame_btn, text="✔ Applica", command=_salva, height=34,
-                      fg_color="#276749", hover_color="#2F855A").pack(side="left", expand=True, fill="x", padx=(0,6))
+                      fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS).pack(side="left", expand=True, fill="x", padx=(0,6))
         ctk.CTkButton(frame_btn, text=T("cm_annulla"), command=dlg.destroy,
                       height=34, width=90, fg_color="#718096").pack(side="left")
 
@@ -6357,7 +6358,7 @@ class ADIFtoPDFApp(ctk.CTk):
 
         # Pulsante logga al volo (usa VFO-A, quello del downlink/RX)
         btn = ctk.CTkButton(win, text=T("rdisp_logga"),
-                            fg_color="#276749", hover_color="#2F855A",
+                            fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS,
                             height=34, font=ctk.CTkFont(size=13, weight="bold"),
                             command=lambda: self._logga_da_display())
         btn.pack(fill="x", padx=16, pady=(12, 12))
@@ -6402,8 +6403,8 @@ class ADIFtoPDFApp(ctk.CTk):
                 self._display_ultimo = {"hz": fa, "modo": ma,
                                         "banda": ba, "hz_b": fb, "modo_b": mb}
             else:
-                lbl_stato.configure(text_color="#E53E3E")
-                lbl_stato_txt.configure(text=T("rdisp_no_radio"), text_color="#E53E3E")
+                lbl_stato.configure(text_color=TH.DANGER)
+                lbl_stato_txt.configure(text=T("rdisp_no_radio"), text_color=TH.DANGER)
             stato["job"] = win.after(1000, _aggiorna)
 
         def _on_close():
@@ -6564,7 +6565,7 @@ class ADIFtoPDFApp(ctk.CTk):
                     pass
                 lbl_stato.configure(text=info, text_color=("#1A365D", "#90CDF4"))
             except Exception as ex:
-                lbl_stato.configure(text=f"Errore: {ex}", text_color="#E53E3E")
+                lbl_stato.configure(text=f"Errore: {ex}", text_color=TH.DANGER)
 
         def _avvia_ora():
             _applica_percorsi()
@@ -6601,7 +6602,7 @@ class ADIFtoPDFApp(ctk.CTk):
             dalla radio."""
             rig = self._omnirig
             if not rig.disponibile():
-                lbl_stato.configure(text="OmniRig non disponibile.", text_color="#E53E3E")
+                lbl_stato.configure(text="OmniRig non disponibile.", text_color=TH.DANGER)
                 return
             mon = ctk.CTkToplevel(dlg)
             mon.title("Monitor Split")
@@ -6612,7 +6613,7 @@ class ADIFtoPDFApp(ctk.CTk):
                          font=ctk.CTkFont(size=12)).pack(pady=(12, 6))
             lbl_val = ctk.CTkLabel(mon, text="—",
                                    font=ctk.CTkFont(size=15, weight="bold", family="Consolas"),
-                                   justify="left", text_color="#4ADE80")
+                                   justify="left", text_color=TH.OK_TEXT)
             lbl_val.pack(pady=8)
             job = {"id": None, "on": True}
             def _upd():
@@ -6651,12 +6652,12 @@ class ADIFtoPDFApp(ctk.CTk):
         ctk.CTkButton(fr_test, text="📊 Monitor Split", command=_monitor_split,
                       fg_color="#4A5568", width=120).pack(side="left", padx=(0,4))
         ctk.CTkButton(fr_test, text=T("radio_avvia_ora"), command=_avvia_ora,
-                      fg_color="#2B6CB0", width=110).pack(side="left")
+                      fg_color=TH.PRIMARY, width=110).pack(side="left")
 
         fr_btn = ctk.CTkFrame(dlg, fg_color="transparent")
         fr_btn.pack(fill="x", padx=20, pady=(4,16))
         ctk.CTkButton(fr_btn, text=T("radio_salva"), command=_salva,
-                      fg_color="#276749", hover_color="#2F855A",
+                      fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS,
                       height=38).pack(side="left", expand=True, fill="x", padx=(0,6))
         ctk.CTkButton(fr_btn, text=T("radio_annulla"), command=dlg.destroy,
                       fg_color="#718096", height=38).pack(side="left", expand=True, fill="x")
@@ -6694,7 +6695,7 @@ class ADIFtoPDFApp(ctk.CTk):
         ultimo_path = dati.get('ultimo_log_path', '')
         ctk.CTkLabel(frame,
                      text=f"Ultimo log: {os.path.basename(ultimo_path) if ultimo_path else '(nessuno ancora)'}",
-                     font=ctk.CTkFont(size=9), text_color="#90CDF4").pack(anchor="w", padx=(24,0), pady=(0,12))
+                     font=ctk.CTkFont(size=9), text_color=TH.LINK).pack(anchor="w", padx=(24,0), pady=(0,12))
 
         var_controllo = ctk.BooleanVar(value=bool(
             self.var_controllo_post_apertura.get() if hasattr(self,'var_controllo_post_apertura') else False))
@@ -6777,7 +6778,7 @@ class ADIFtoPDFApp(ctk.CTk):
         frame_btn = ctk.CTkFrame(dlg, fg_color="transparent")
         frame_btn.pack(fill="x", padx=24, pady=(16,16))
         ctk.CTkButton(frame_btn, text=T("pref_salva"), command=_salva, height=34,
-                      fg_color="#276749", hover_color="#2F855A").pack(
+                      fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS).pack(
                       side="left", expand=True, fill="x", padx=(0,6))
         ctk.CTkButton(frame_btn, text=T("cm_annulla"), command=dlg.destroy,
                       height=34, width=100, fg_color="#718096").pack(side="left")
@@ -6795,7 +6796,7 @@ class ADIFtoPDFApp(ctk.CTk):
         ctk.CTkLabel(dlg, text=T("profili"),
                      font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(14,4), padx=20)
         ctk.CTkLabel(dlg, text=T("profilo_attivo") + f" {self.profilo_attivo or '—'}",
-                     font=ctk.CTkFont(size=10), text_color="#90CDF4").pack(padx=20, pady=(0,8))
+                     font=ctk.CTkFont(size=10), text_color=TH.LINK).pack(padx=20, pady=(0,8))
 
         scroll = ctk.CTkScrollableFrame(dlg, height=260)
         scroll.pack(fill="both", expand=True, padx=15, pady=4)
@@ -6817,15 +6818,15 @@ class ADIFtoPDFApp(ctk.CTk):
                     anchor="w", font=ctk.CTkFont(size=11))
                 lbl.pack(side="left", expand=True, padx=8, pady=6)
                 ctk.CTkButton(row, text=T("cm_usa"), width=50, height=26,
-                              fg_color="#276749",
+                              fg_color=TH.SUCCESS_H,
                               command=lambda n=nome, d=dati: [self._imposta_default(n), self._applica_profilo({**d,'nome':n}), aggiorna_lista(), None]
                               ).pack(side="right", padx=2, pady=4)
                 ctk.CTkButton(row, text=T("cm_mod"), width=50, height=26,
-                              fg_color="#2B6CB0",
+                              fg_color=TH.PRIMARY,
                               command=lambda n=nome, d=dati: modifica(n, d)
                               ).pack(side="right", padx=2, pady=4)
                 ctk.CTkButton(row, text=T("cm_del"), width=50, height=26,
-                              fg_color="#C05621",
+                              fg_color=TH.WARNING_H,
                               command=lambda n=nome: elimina(n)
                               ).pack(side="right", padx=2, pady=4)
 
@@ -6862,7 +6863,128 @@ class ADIFtoPDFApp(ctk.CTk):
         frame_btn = ctk.CTkFrame(dlg, fg_color="transparent")
         frame_btn.pack(fill="x", padx=15, pady=10)
         ctk.CTkButton(frame_btn, text="+ " + T("profilo_nuovo"), command=nuovo,
-                      fg_color="#276749", height=34).pack(side="left", expand=True, fill="x")
+                      fg_color=TH.SUCCESS_H, height=34).pack(side="left", expand=True, fill="x", padx=(0, 4))
+        ctk.CTkButton(frame_btn, text="📥 " + T("profilo_importa"),
+                      command=lambda: (self._importa_profili(dlg), aggiorna_lista()),
+                      fg_color=TH.PRIMARY, height=34).pack(side="left", expand=True, fill="x", padx=4)
+        ctk.CTkButton(frame_btn, text="📤 " + T("profilo_esporta"),
+                      command=lambda: self._esporta_profili(dlg),
+                      fg_color="#4A5568", height=34).pack(side="left", expand=True, fill="x", padx=(4, 0))
+
+    def _profilo_e_sensibile(self, key):
+        """True se la chiave di profilo contiene una credenziale (password/API key)."""
+        k = str(key).lower()
+        return ("password" in k) or ("api_key" in k) or ("apikey" in k) or k.endswith("_key")
+
+    def _esporta_profili(self, parent=None):
+        """Esporta tutti i profili in un file JSON (backup e travaso tra PC).
+        Chiede se includere le credenziali (password/API key)."""
+        parent = parent or self
+        profili = self._carica_profili()
+        if not profili:
+            messagebox.showinfo("Esporta profili",
+                                "Non c'è nessun profilo da esportare.", parent=parent)
+            return
+        incl = messagebox.askyesnocancel(
+            "Esporta profili",
+            "Includere password e API key nel file?\n\n"
+            "• Sì  → backup completo: riutilizzabile su un altro PC senza reinserire le credenziali.\n"
+            "• No  → solo i dati operatore, senza password.\n\n"
+            "⚠ Con 'Sì' il file contiene le password in chiaro: conservalo in un posto sicuro.",
+            parent=parent)
+        if incl is None:
+            return
+        import datetime as _dt
+        default = f"adif_fzr_profili_{_dt.datetime.now():%Y%m%d}.json"
+        path = filedialog.asksaveasfilename(
+            title="Esporta profili", defaultextension=".json", initialfile=default,
+            filetypes=[("File JSON", "*.json"), ("Tutti i file", "*.*")], parent=parent)
+        if not path:
+            return
+        dati = {}
+        for nome, prof in profili.items():
+            if incl:
+                dati[nome] = dict(prof)
+            else:
+                dati[nome] = {k: v for k, v in prof.items()
+                              if not self._profilo_e_sensibile(k)}
+        pacchetto = {
+            "_adif_fzr_export": True,
+            "tipo": "profili",
+            "versione": VERSIONE,
+            "data": _dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "con_credenziali": bool(incl),
+            "profili": dati,
+        }
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(pacchetto, f, ensure_ascii=False, indent=2)
+        except Exception as ex:
+            messagebox.showerror("Errore", f"Esportazione fallita:\n{ex}", parent=parent)
+            return
+        messagebox.showinfo(
+            "Esporta profili",
+            f"Esportati {len(dati)} profili in:\n{path}"
+            + ("" if incl else "\n\n(senza password / API key)"),
+            parent=parent)
+
+    def _importa_profili(self, parent=None):
+        """Importa profili da un file JSON esportato (o da un file
+        .adif_fzr_profili.json grezzo). Gestisce i doppioni di nome.
+        Ritorna il numero di profili importati."""
+        parent = parent or self
+        path = filedialog.askopenfilename(
+            title="Importa profili",
+            filetypes=[("File JSON", "*.json"), ("Tutti i file", "*.*")], parent=parent)
+        if not path:
+            return 0
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except Exception as ex:
+            messagebox.showerror("Errore", f"File non leggibile:\n{ex}", parent=parent)
+            return 0
+        # Accetta sia il formato esportato ({..., "profili": {...}}) sia un
+        # file profili grezzo ({nome: {...}, ...}).
+        if isinstance(raw, dict) and isinstance(raw.get("profili"), dict):
+            in_profili = raw["profili"]
+        elif isinstance(raw, dict) and raw and all(isinstance(v, dict) for v in raw.values()):
+            in_profili = raw
+        else:
+            messagebox.showerror(
+                "Errore", "Il file non contiene profili in un formato riconosciuto.",
+                parent=parent)
+            return 0
+        if not in_profili:
+            messagebox.showinfo("Importa profili", "Il file non contiene profili.",
+                                parent=parent)
+            return 0
+        esistenti = self._carica_profili()
+        conflitti = [n for n in in_profili if n in esistenti]
+        sovrascrivi = True
+        if conflitti:
+            r = messagebox.askyesnocancel(
+                "Importa profili",
+                f"{len(conflitti)} profili hanno un nome già presente "
+                f"({', '.join(conflitti[:5])}{'…' if len(conflitti) > 5 else ''}).\n\n"
+                "• Sì  → sovrascrivi gli esistenti con la versione importata\n"
+                "• No  → salta i doppioni, importa solo i profili nuovi\n"
+                "• Annulla → non importare nulla",
+                parent=parent)
+            if r is None:
+                return 0
+            sovrascrivi = bool(r)
+        n_imp = 0
+        for nome, prof in in_profili.items():
+            if nome in esistenti and not sovrascrivi:
+                continue
+            prof = dict(prof)
+            prof.setdefault("nome", nome)
+            esistenti[nome] = prof
+            n_imp += 1
+        self._salva_profili(esistenti)
+        messagebox.showinfo("Importa profili", f"Importati {n_imp} profili.", parent=parent)
+        return n_imp
 
     def _chiudi_app(self):
         """Chiusura pulita: chiede di salvare le modifiche non salvate, poi
@@ -6981,13 +7103,13 @@ class ADIFtoPDFApp(ctk.CTk):
                                 # File non più raggiungibile — avvisa senza bloccare
                                 self.lbl_status.configure(
                                     text=f"⚠ Ultimo log non trovato: {os.path.basename(p)}",
-                                    text_color="#F6AD55")
+                                    text_color=TH.WARN_TEXT)
                         except Exception:
                             # Non deve mai impedire l'avvio del programma
                             try:
                                 self.lbl_status.configure(
                                     text="⚠ Impossibile aprire l'ultimo log",
-                                    text_color="#F6AD55")
+                                    text_color=TH.WARN_TEXT)
                             except Exception:
                                 pass
                     if ultimo:
@@ -7065,7 +7187,7 @@ class ADIFtoPDFApp(ctk.CTk):
         frame_wbtn = ctk.CTkFrame(dlg, fg_color="transparent")
         frame_wbtn.pack(padx=20, pady=14, fill="x")
         ctk.CTkButton(frame_wbtn, text=T("dv_crea_inizia"), command=crea,
-                      fg_color="#276749", height=38,
+                      fg_color=TH.SUCCESS_H, height=38,
                       font=ctk.CTkFont(size=13, weight="bold")).pack(side="left", expand=True, padx=(0,6), fill="x")
         ctk.CTkButton(frame_wbtn, text=T("dv_salta"), command=dlg.destroy,
                       fg_color="#718096", height=38).pack(side="left", width=80)
@@ -7182,7 +7304,7 @@ class ADIFtoPDFApp(ctk.CTk):
             self.qsos_filtrati = list(self.qsos_caricati)
             self._log_modificato = False   # file appena aperto: nessuna modifica
             nome = os.path.basename(path)
-            self.lbl_status.configure(text=T("caricato_status", nome=nome, count=len(self.qsos_caricati)), text_color="#3182CE")
+            self.lbl_status.configure(text=T("caricato_status", nome=nome, count=len(self.qsos_caricati)), text_color=TH.PRIMARY)
             self.lbl_filtri.configure(text=T("nessun_filtro"), text_color="gray")
             self._aggiungi_storico(path)
             self._aggiorna_tree()
@@ -7684,7 +7806,7 @@ class ADIFtoPDFApp(ctk.CTk):
             self._esegui_genera_pdf()
 
         ctk.CTkButton(frame_btn, text="📄 Genera PDF", command=_genera,
-                      height=38, fg_color="#1A365D", hover_color="#2A4365",
+                      height=38, fg_color=TH.PRIMARY_H, hover_color="#2A4365",
                       font=ctk.CTkFont(size=13, weight="bold")).pack(
                       side="left", expand=True, fill="x", padx=(0,6))
         ctk.CTkButton(frame_btn, text=T("cm_annulla"), command=dlg.destroy,
@@ -7752,7 +7874,7 @@ class ADIFtoPDFApp(ctk.CTk):
                 ctk.CTkLabel(dlg_anno,
                     text=f"⚠  {len(qsos):,} QSO — log molto grande",
                     font=ctk.CTkFont(size=13, weight="bold"),
-                    text_color="#F6AD55").pack(pady=(16, 2), padx=20)
+                    text_color=TH.WARN_TEXT).pack(pady=(16, 2), padx=20)
                 ctk.CTkLabel(dlg_anno,
                     text=T("dv_gen_minuti"),
                     font=ctk.CTkFont(size=10), text_color="gray").pack(pady=(0, 10))
@@ -7766,7 +7888,7 @@ class ADIFtoPDFApp(ctk.CTk):
             ctk.CTkButton(dlg_anno,
                 text=f"📄 Stampa tutto ({len(qsos):,} QSO)",
                 command=_scegli_tutto, height=38,
-                fg_color="#2B6CB0", hover_color="#1A365D",
+                fg_color=TH.PRIMARY, hover_color=TH.PRIMARY_H,
                 font=ctk.CTkFont(size=11, weight="bold")).pack(fill="x", padx=20, pady=(0, 8))
 
             if multi_anno:
@@ -7789,7 +7911,7 @@ class ADIFtoPDFApp(ctk.CTk):
                 ctk.CTkButton(frame_anno,
                     text="📅 Solo l'anno selezionato",
                     command=_scegli_anno, height=38,
-                    fg_color="#276749", hover_color="#2F855A",
+                    fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS,
                     font=ctk.CTkFont(size=11)).pack(side="left", expand=True, fill="x")
 
             ctk.CTkButton(dlg_anno, text=T("cm_annulla"),

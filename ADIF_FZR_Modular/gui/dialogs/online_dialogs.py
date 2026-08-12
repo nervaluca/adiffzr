@@ -14,6 +14,7 @@ import customtkinter as ctk
 from tkinter import messagebox, filedialog
 import tkinter.ttk as _ttk
 from config import T
+import theme as TH
 from net.uploaders import (
     CloudlogUploader, ClublogUploader, LotwUploader,
     EqslUploader, QO100Uploader, LotwDownloader, EqslDownloader
@@ -75,7 +76,7 @@ class CloudlogUploadDialog(ctk.CTkToplevel):
         frame_btn.pack(fill="x", padx=20, pady=(0, 16))
         self.btn_carica = ctk.CTkButton(frame_btn, text=T("cl_carica_btn"),
                       command=self._avvia_upload, height=38,
-                      fg_color="#276749", hover_color="#2F855A",
+                      fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS,
                       font=ctk.CTkFont(size=13, weight="bold"))
         self.btn_carica.pack(side="left", expand=True, fill="x", padx=(0, 6))
         ctk.CTkButton(frame_btn, text=T("cl_annulla"), command=self._chiudi,
@@ -92,9 +93,9 @@ class CloudlogUploadDialog(ctk.CTkToplevel):
         self.update()
         ok, msg = self.uploader.test_connection()
         if ok:
-            self.lbl_test.configure(text=T("cl_test_ok"), text_color="#48BB78")
+            self.lbl_test.configure(text=T("cl_test_ok"), text_color=TH.OK_TEXT)
         else:
-            self.lbl_test.configure(text=f"{T('cl_test_ko')}{msg}", text_color="#E53E3E")
+            self.lbl_test.configure(text=f"{T('cl_test_ko')}{msg}", text_color=TH.DANGER)
 
     def _chiudi(self):
         self._annulla = True
@@ -191,7 +192,7 @@ class ClublogUploadDialog(ctk.CTkToplevel):
         frame_btn.pack(fill="x", padx=20, pady=(0, 16))
         self.btn_carica = ctk.CTkButton(frame_btn, text=T("cb_carica_btn"),
                       command=self._avvia_upload, height=38,
-                      fg_color="#276749", hover_color="#2F855A",
+                      fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS,
                       font=ctk.CTkFont(size=13, weight="bold"))
         self.btn_carica.pack(side="left", expand=True, fill="x", padx=(0, 6))
         ctk.CTkButton(frame_btn, text=T("cl_annulla"), command=self._chiudi,
@@ -316,7 +317,7 @@ class LotwUploadDialog(ctk.CTkToplevel):
 
         if not os.path.isfile(tqsl_path):
             ctk.CTkLabel(self, text=T("lw_tqsl_non_trovato", path=tqsl_path),
-                         font=ctk.CTkFont(size=11), text_color="#E53E3E",
+                         font=ctk.CTkFont(size=11), text_color=TH.DANGER,
                          wraplength=460, justify="left").pack(padx=20, pady=10)
 
         frame_scope = ctk.CTkFrame(self)
@@ -345,7 +346,7 @@ class LotwUploadDialog(ctk.CTkToplevel):
         frame_btn.pack(fill="x", padx=20, pady=(0, 16))
         self.btn_carica = ctk.CTkButton(frame_btn, text=T("lw_carica_btn"),
                       command=self._avvia_upload, height=38,
-                      fg_color="#276749", hover_color="#2F855A",
+                      fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS,
                       font=ctk.CTkFont(size=13, weight="bold"))
         self.btn_carica.pack(side="left", expand=True, fill="x", padx=(0, 6))
         ctk.CTkButton(frame_btn, text=T("cl_annulla"), command=self.destroy,
@@ -440,7 +441,7 @@ class EqslUploadDialog(ctk.CTkToplevel):
         frame_btn.pack(fill="x", padx=20, pady=(0, 16))
         self.btn_carica = ctk.CTkButton(frame_btn, text=T("eq_carica_btn"),
                       command=self._avvia_upload, height=38,
-                      fg_color="#276749", hover_color="#2F855A",
+                      fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS,
                       font=ctk.CTkFont(size=13, weight="bold"))
         self.btn_carica.pack(side="left", expand=True, fill="x", padx=(0, 6))
         ctk.CTkButton(frame_btn, text=T("cl_annulla"), command=self.destroy,
@@ -512,7 +513,7 @@ class QO100UploadDialog(ctk.CTkToplevel):
 
         if not self.qsos_qo100:
             ctk.CTkLabel(self, text=T("qo100_no_qso"),
-                         font=ctk.CTkFont(size=11), text_color="#F6AD55",
+                         font=ctk.CTkFont(size=11), text_color=TH.WARN_TEXT,
                          wraplength=460, justify="left").pack(padx=20, pady=10)
             ctk.CTkButton(self, text=T("cm_chiudi"), fg_color="#718096",
                           command=self.destroy, height=32).pack(pady=10)
@@ -533,7 +534,7 @@ class QO100UploadDialog(ctk.CTkToplevel):
         self.btn_carica = ctk.CTkButton(frame_btn,
                       text=f"🛰 Carica {len(self.qsos_qo100)} QSO su QO-100 DX Club",
                       command=self._avvia_upload, height=38,
-                      fg_color="#276749", hover_color="#2F855A",
+                      fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS,
                       font=ctk.CTkFont(size=12, weight="bold"))
         self.btn_carica.pack(side="left", expand=True, fill="x", padx=(0,6))
         ctk.CTkButton(frame_btn, text=T("cm_annulla"), command=self._chiudi,
@@ -631,12 +632,12 @@ class HamQTHDialog(ctk.CTkToplevel):
         frame_b = ctk.CTkFrame(self, fg_color="transparent")
         frame_b.pack(pady=4)
         if info.get("lotw","") == "Y":
-            ctk.CTkLabel(frame_b, text="LoTW ✓", fg_color="#276749",
+            ctk.CTkLabel(frame_b, text="LoTW ✓", fg_color=TH.SUCCESS_H,
                          corner_radius=6, width=70, height=24,
                          font=ctk.CTkFont(size=10, weight="bold"),
                          text_color="white").pack(side="left", padx=4)
         if info.get("eqsl","") == "Y":
-            ctk.CTkLabel(frame_b, text="eQSL ✓", fg_color="#2B6CB0",
+            ctk.CTkLabel(frame_b, text="eQSL ✓", fg_color=TH.PRIMARY,
                          corner_radius=6, width=70, height=24,
                          font=ctk.CTkFont(size=10, weight="bold"),
                          text_color="white").pack(side="left", padx=4)
@@ -676,7 +677,7 @@ class HamQTHDialog(ctk.CTkToplevel):
                     ctk.CTkButton(frame_azioni, text=f"← {lbl}",
                                   width=90, height=26,
                                   font=ctk.CTkFont(size=9),
-                                  fg_color="#2B6CB0",
+                                  fg_color=TH.PRIMARY,
                                   command=lambda c=campo, v=val, l=lbl: _applica(c, v, l)
                                   ).pack(side="left", padx=(0,4))
 
@@ -715,7 +716,7 @@ class LotwDownloadDialog(ctk.CTkToplevel):
                      font=ctk.CTkFont(size=11)).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0,2))
         self.entry_dal = ctk.CTkEntry(form, width=160, placeholder_text=T("dv_ph_2024_data"))
         self.entry_dal.grid(row=1, column=0, sticky="w", pady=(0, 10))
-        ctk.CTkButton(form, text="📅", width=30, height=26, fg_color="#2B6CB0",
+        ctk.CTkButton(form, text="📅", width=30, height=26, fg_color=TH.PRIMARY,
                       command=lambda: CalendarPopup(self, self.entry_dal)
                       ).grid(row=1, column=1, padx=(6,0), sticky="w", pady=(0,10))
 
@@ -737,7 +738,7 @@ class LotwDownloadDialog(ctk.CTkToplevel):
         frame_btn.pack(fill="x", padx=24, pady=(0, 16))
         self.btn_dl = ctk.CTkButton(frame_btn, text=T("lwd_scarica_btn"),
                       command=self._scarica, height=38,
-                      fg_color="#276749", hover_color="#2F855A",
+                      fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS,
                       font=ctk.CTkFont(size=13, weight="bold"))
         self.btn_dl.pack(side="left", expand=True, fill="x", padx=(0, 6))
         ctk.CTkButton(frame_btn, text=T("cl_annulla"), command=self.destroy,
@@ -767,18 +768,18 @@ class LotwDownloadDialog(ctk.CTkToplevel):
         self.btn_dl.configure(state="normal")
 
         if not ok:
-            self.lbl_stato.configure(text="✗ Errore", text_color="#E53E3E")
+            self.lbl_stato.configure(text="✗ Errore", text_color=TH.DANGER)
             messagebox.showerror(T("errore"), T("lwd_err", msg=msg))
             return
 
         n = adif_text.upper().count("<EOR>")
         if n == 0:
-            self.lbl_stato.configure(text="⚠ 0 QSO", text_color="#F6AD55")
+            self.lbl_stato.configure(text="⚠ 0 QSO", text_color=TH.WARN_TEXT)
             messagebox.showwarning(T("attenzione"), T("lwd_vuoto"))
             return
 
         self.progress.set(1.0)
-        self.lbl_stato.configure(text=f"✓ {n} QSO scaricati", text_color="#48BB78")
+        self.lbl_stato.configure(text=f"✓ {n} QSO scaricati", text_color=TH.OK_TEXT)
 
         try:
             qsos_scaricati = self.app_ref._leggi_adif_sicuro(adif_text)
@@ -837,7 +838,7 @@ class EqslDownloadDialog(ctk.CTkToplevel):
         self.entry_dal = ctk.CTkEntry(form, width=160,
                                        placeholder_text=T("dv_ph_20240101"))
         self.entry_dal.grid(row=1, column=0, sticky="w", pady=(0,6))
-        ctk.CTkButton(form, text="📅", width=30, height=26, fg_color="#2B6CB0",
+        ctk.CTkButton(form, text="📅", width=30, height=26, fg_color=TH.PRIMARY,
                       command=lambda: CalendarPopup(self, self.entry_dal)
                       ).grid(row=1, column=1, padx=(6,0), sticky="w", pady=(0,6))
 
@@ -845,7 +846,7 @@ class EqslDownloadDialog(ctk.CTkToplevel):
         self._carica_ultima_data()
 
         ctk.CTkLabel(form, text=self._lbl_ultima_data(),
-                     font=ctk.CTkFont(size=9), text_color="#90CDF4"
+                     font=ctk.CTkFont(size=9), text_color=TH.LINK
                      ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(0,10))
 
         # ── Modalità ──
@@ -873,7 +874,7 @@ class EqslDownloadDialog(ctk.CTkToplevel):
         frame_btn.pack(fill="x", padx=24, pady=(0,16))
         self.btn_dl = ctk.CTkButton(frame_btn, text=T("eqd_scarica_btn"),
                       command=self._scarica, height=38,
-                      fg_color="#276749", hover_color="#2F855A",
+                      fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS,
                       font=ctk.CTkFont(size=13, weight="bold"))
         self.btn_dl.pack(side="left", expand=True, fill="x", padx=(0,6))
         ctk.CTkButton(frame_btn, text=T("cl_annulla"), command=self.destroy,
@@ -930,18 +931,18 @@ class EqslDownloadDialog(ctk.CTkToplevel):
         self.btn_dl.configure(state="normal")
 
         if not ok:
-            self.lbl_stato.configure(text="✗ Errore", text_color="#E53E3E")
+            self.lbl_stato.configure(text="✗ Errore", text_color=TH.DANGER)
             messagebox.showerror(T("errore"), T("eqd_err", msg=msg), parent=self)
             return
 
         if adif_text in ("NO_QSO", "") or adif_text.upper().count("<EOR>") == 0:
-            self.lbl_stato.configure(text="⚠ 0 QSO", text_color="#F6AD55")
+            self.lbl_stato.configure(text="⚠ 0 QSO", text_color=TH.WARN_TEXT)
             messagebox.showwarning(T("attenzione"), T("eqd_vuoto"), parent=self)
             return
 
         n = adif_text.upper().count("<EOR>")
         self.progress.set(1.0)
-        self.lbl_stato.configure(text=f"✓ {n} QSO scaricati", text_color="#48BB78")
+        self.lbl_stato.configure(text=f"✓ {n} QSO scaricati", text_color=TH.OK_TEXT)
         self._salva_ultima_data(_normalizza_data_download(self.entry_dal.get().strip(), "adif")
                                 or datetime.date.today().strftime("%Y%m%d"))
 
@@ -1178,11 +1179,11 @@ class EqslUnconfirmedDialog(ctk.CTkToplevel):
         frame_leg = ctk.CTkFrame(self, fg_color="transparent")
         frame_leg.pack(fill="x", padx=14, pady=(0,2))
         ctk.CTkLabel(frame_leg, text="🟢 SWL con QSO nel log (OK)",
-                     font=ctk.CTkFont(size=9), text_color="#48BB78").pack(side="left", padx=(0,12))
+                     font=ctk.CTkFont(size=9), text_color=TH.OK_TEXT).pack(side="left", padx=(0,12))
         ctk.CTkLabel(frame_leg, text="🟡 SWL senza QSO corrispondente (verificare)",
-                     font=ctk.CTkFont(size=9), text_color="#F6AD55").pack(side="left", padx=(0,12))
+                     font=ctk.CTkFont(size=9), text_color=TH.WARN_TEXT).pack(side="left", padx=(0,12))
         ctk.CTkLabel(frame_leg, text="🔵 QSO non abbinato",
-                     font=ctk.CTkFont(size=9), text_color="#90CDF4").pack(side="left")
+                     font=ctk.CTkFont(size=9), text_color=TH.LINK).pack(side="left")
 
         # ── Barra pulsanti ──
         frame_path = ctk.CTkFrame(self, fg_color="transparent")
@@ -1212,11 +1213,11 @@ class EqslUnconfirmedDialog(ctk.CTkToplevel):
 
         ctk.CTkButton(frame_btn, text="💾 Salva SWL in swl_log.adi",
                       command=self._salva_swl, height=32,
-                      fg_color="#2B6CB0", hover_color="#1A365D",
+                      fg_color=TH.PRIMARY, hover_color=TH.PRIMARY_H,
                       font=ctk.CTkFont(size=10, weight="bold")).pack(side="left", padx=(0,4))
         ctk.CTkButton(frame_btn, text="📤 Carica swl_log.adi su eQSL",
                       command=self._upload_swl_log_eqsl, height=32,
-                      fg_color="#276749", hover_color="#2F855A",
+                      fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS,
                       font=ctk.CTkFont(size=10, weight="bold")).pack(side="left", padx=(0,4))
         ctk.CTkButton(frame_btn, text="💾 Salva altri come ADIF",
                       command=self._salva_non_swl, height=32,
@@ -1234,7 +1235,10 @@ class EqslUnconfirmedDialog(ctk.CTkToplevel):
                 for iid, swl in self._vars_swl.items() if not swl]
 
     def destroy(self):
-        _ripristina_tema_ttk()
+        try:
+            _ripristina_tema_ttk()
+        except Exception:
+            pass
         super().destroy()
 
     def _salva_swl(self):

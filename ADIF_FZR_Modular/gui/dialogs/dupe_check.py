@@ -10,6 +10,7 @@ if _this_dir not in sys.path:
 
 import datetime as _dt
 import customtkinter as ctk
+import theme as TH
 from tkinter import messagebox
 import tkinter.ttk as _ttk
 from config import T
@@ -61,7 +62,7 @@ class DuplicatiDialog(ctk.CTkToplevel):
                      font=ctk.CTkFont(size=10), text_color="gray").pack(side="left")
 
         ctk.CTkButton(frame_checks, text=T("dup_cerca"), command=self.cerca,
-                      fg_color="#2B6CB0", width=100).pack(side="right", padx=10)
+                      fg_color=TH.PRIMARY, width=100).pack(side="right", padx=10)
 
         # Risultati
         self.lbl_risultato = ctk.CTkLabel(self, text=T("dup_premi_cerca"),
@@ -120,13 +121,13 @@ class DuplicatiDialog(ctk.CTkToplevel):
                       fg_color="#4A5568", height=32).pack(side="left", padx=(0,6))
         ctk.CTkButton(frame_btns1, text=T("dup_elimina_sel"),
                       command=self.elimina_selezionati,
-                      fg_color="#9C4221", hover_color="#7B3618", height=32).pack(side="left", padx=(0,6))
+                      fg_color=TH.WARNING_H, hover_color=TH.WARNING_H, height=32).pack(side="left", padx=(0,6))
         self.btn_undo = ctk.CTkButton(frame_btns1, text=T("dup_annulla"),
                       command=self._undo,
                       fg_color="#718096", width=110, height=32, state="disabled")
         self.btn_undo.pack(side="left")
         ctk.CTkButton(frame_btns1, text=T("chiudi"), command=self.destroy,
-                      fg_color="#2B6CB0", width=100, height=32).pack(side="right")
+                      fg_color=TH.PRIMARY, width=100, height=32).pack(side="right")
 
     def _on_click_tree(self, event):
         region = self.tree.identify_region(event.x, event.y)
@@ -322,15 +323,20 @@ class DuplicatiDialog(ctk.CTkToplevel):
         totale_gruppi = len(self.gruppi_dup)
         if totale_gruppi == 0:
             self.lbl_risultato.configure(
-                text=T("dup_nessuno"), text_color="#48BB78")
+                text=T("dup_nessuno"), text_color=TH.OK_TEXT)
         else:
             self.lbl_risultato.configure(
                 text=T("dup_trovati", g=totale_gruppi, n=n_dup),
-                text_color="#E53E3E")
+                text_color=TH.DANGER)
             self._seleziona_default()
 
     def destroy(self):
-        _ripristina_tema_ttk()
+        # Il ripristino tema ttk è opzionale: se la funzione non è
+        # disponibile non deve impedire la chiusura della finestra.
+        try:
+            _ripristina_tema_ttk()
+        except Exception:
+            pass
         super().destroy()
 
 

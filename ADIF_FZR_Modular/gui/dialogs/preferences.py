@@ -9,6 +9,7 @@ if _this_dir not in sys.path:
     sys.path.insert(0, _this_dir)
 
 import customtkinter as ctk
+import theme as TH
 from tkinter import colorchooser, messagebox
 import tkinter.ttk as _ttk
 from config import T
@@ -45,7 +46,7 @@ class ColoriDialog(ctk.CTkToplevel):
 
         frame_btn = ctk.CTkFrame(self, fg_color="transparent")
         frame_btn.pack(pady=12, fill="x", padx=20)
-        ctk.CTkButton(frame_btn, text=T("colori_salva"), command=self.salva, fg_color="#2B6CB0").pack(side="left", expand=True, padx=5)
+        ctk.CTkButton(frame_btn, text=T("colori_salva"), command=self.salva, fg_color=TH.PRIMARY).pack(side="left", expand=True, padx=5)
         ctk.CTkButton(frame_btn, text=T("colori_ripristina"), command=self.ripristina, fg_color="#718096").pack(side="left", expand=True, padx=5)
 
     def scegli_colore(self, chiave):
@@ -110,7 +111,7 @@ class ColoriHtmlDialog(ctk.CTkToplevel):
         frame_btn = ctk.CTkFrame(self, fg_color="transparent")
         frame_btn.pack(pady=12, fill="x", padx=20)
         ctk.CTkButton(frame_btn, text=T("colori_html_salva"),
-                      command=self._salva, fg_color="#2B6CB0").pack(
+                      command=self._salva, fg_color=TH.PRIMARY).pack(
                       side="left", expand=True, padx=(0,6), fill="x")
         ctk.CTkButton(frame_btn, text=T("colori_html_ripristina"),
                       command=self._ripristina, fg_color="#718096").pack(
@@ -239,10 +240,10 @@ class OpzioniRegistroPDFDialog(ctk.CTkToplevel):
                         _build_rows()
 
                 ctk.CTkButton(row, text="↑", width=26, height=22,
-                              fg_color="#2B6CB0", command=_su,
+                              fg_color=TH.PRIMARY, command=_su,
                               font=ctk.CTkFont(size=10)).pack(side="left", padx=(0,2))
                 ctk.CTkButton(row, text="↓", width=26, height=22,
-                              fg_color="#2B6CB0", command=_giu,
+                              fg_color=TH.PRIMARY, command=_giu,
                               font=ctk.CTkFont(size=10)).pack(side="left")
 
                 # Tag piccolo per riferimento
@@ -284,7 +285,7 @@ class OpzioniRegistroPDFDialog(ctk.CTkToplevel):
         ctk.CTkButton(frame_btn, text=T("orp_ripristina"), width=150, height=32,
                       fg_color="#718096", command=_ripristina).pack(side="left", padx=(0,8))
         ctk.CTkButton(frame_btn, text=T("orp_salva"), height=32,
-                      fg_color="#276749", hover_color="#2F855A",
+                      fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS,
                       font=ctk.CTkFont(size=12, weight="bold"),
                       command=_salva).pack(side="left", expand=True, fill="x", padx=(0,8))
         ctk.CTkButton(frame_btn, text=T("orp_annulla"), width=90, height=32,
