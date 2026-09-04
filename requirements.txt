@@ -1,0 +1,7 @@
+customtkinter
+reportlab
+pillow
+adif_io
+openpyxl
+pyserial
+pywin32
