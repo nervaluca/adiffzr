@@ -67,7 +67,7 @@ class SatellitiDialog(ctk.CTkToplevel):
         _LOG("1: toplevel creato")
         self.app_ref = app_ref
         self.title("Satelliti — cruscotto")
-        self.geometry("1180x680")
+        self.geometry("1380x760")
         self.resizable(True, True)
         self.grab_set()
 
@@ -144,24 +144,53 @@ class SatellitiDialog(ctk.CTkToplevel):
         ctk.CTkOptionMenu(top, values=["0", "5", "10", "20"], variable=self.var_elev,
                           width=64).grid(row=0, column=5)
 
+        # ── SELEZIONE SATELLITE ─────────────────────────────────────
+        # Due righe separate evitano che i pulsanti escano dalla finestra
+        # quando la colonna destra è stretta.
         selrow = ctk.CTkFrame(dx, fg_color="transparent")
-        selrow.pack(fill="x", padx=8, pady=4)
+        selrow.pack(fill="x", padx=8, pady=(4, 2))
+
         ctk.CTkLabel(selrow, text="Satellite:").pack(side="left")
         self.var_sat = ctk.StringVar(value="")
-        self.menu_sat = ctk.CTkOptionMenu(selrow, values=["—"], variable=self.var_sat,
-                                          width=180, command=self._cambia_sat)
+        self.menu_sat = ctk.CTkOptionMenu(
+            selrow, values=["—"], variable=self.var_sat,
+            width=190, command=self._cambia_sat
+        )
         self.menu_sat.pack(side="left", padx=6)
-        ctk.CTkButton(selrow, text="Scegli…", width=70,
-                      command=self._apri_selezione).pack(side="left")
+
+        ctk.CTkButton(
+            selrow, text="Scegli…", width=90,
+            command=self._apri_selezione
+        ).pack(side="left")
+
+        # Seconda riga: funzioni operative.
+        btnrow = ctk.CTkFrame(dx, fg_color="transparent")
+        btnrow.pack(fill="x", padx=8, pady=(2, 6))
+
+        ctk.CTkButton(
+            btnrow, text="🔄 Aggiorna TLE", width=125,
+            fg_color="#2B6CB0", hover_color="#2C5282",
+            command=self._aggiorna_tle
+        ).pack(side="left", padx=(0, 6))
+
+        ctk.CTkButton(
+            btnrow, text="➕ TLE manuale", width=125,
+            fg_color="#4A5568", hover_color="#3B4453",
+            command=self._dialog_tle_manuale
+        ).pack(side="left", padx=(0, 6))
+
         # Ponte al logging: apre Aggiungi QSO col satellite selezionato,
         # precompilando TX/RX/SAT_MODE dal database frequenze.
         try:
             _txt_log = T("aq_logga_sat")
         except Exception:
             _txt_log = "➕ Logga QSO"
-        ctk.CTkButton(selrow, text=_txt_log, width=110,
-                      fg_color="#276749", hover_color="#2F855A",
-                      command=self._logga_qso).pack(side="right")
+
+        ctk.CTkButton(
+            btnrow, text=_txt_log, width=140,
+            fg_color="#276749", hover_color="#2F855A",
+            command=self._logga_qso
+        ).pack(side="right")
 
         # pannello dati live
         self.box_live = ctk.CTkFrame(dx)
@@ -170,6 +199,20 @@ class SatellitiDialog(ctk.CTkToplevel):
                                      text_color=TXT, justify="left", anchor="w",
                                      font=ctk.CTkFont(size=13))
         self.lbl_live.pack(fill="x", padx=10, pady=8)
+
+        # ── PUNTAMENTO ANTENNA (riquadro grande) ──────────────────
+        self.box_punta = ctk.CTkFrame(dx, fg_color="#12233d", border_width=2,
+                                      border_color="#2a3c5a")
+        self.box_punta.pack(fill="x", padx=8, pady=(0, 6))
+        ctk.CTkLabel(self.box_punta, text="PUNTAMENTO ANTENNA", text_color=MUT,
+                     font=ctk.CTkFont(size=11, weight="bold")).pack(pady=(8, 0))
+        self.lbl_punta = ctk.CTkLabel(self.box_punta, text="—",
+                                      text_color=TXT,
+                                      font=ctk.CTkFont(size=30, weight="bold"))
+        self.lbl_punta.pack(pady=(2, 0))
+        self.lbl_punta_sub = ctk.CTkLabel(self.box_punta, text="",
+                                          text_color=MUT, font=ctk.CTkFont(size=12))
+        self.lbl_punta_sub.pack(pady=(0, 10))
 
         # tabella passaggi
         cont = ctk.CTkFrame(dx)
@@ -296,14 +339,65 @@ class SatellitiDialog(ctk.CTkToplevel):
         ctk.CTkButton(win, text="OK", command=ok).pack(pady=(4, 12))
 
     # ── caricamento + calcolo ──
-    def _carica_e_calcola(self):
-        self.lbl_stato.configure(text="Scarico TLE…")
-        threading.Thread(target=self._carica_tle_worker, daemon=True).start()
+    def _carica_e_calcola(self, forza=False):
+        self.lbl_stato.configure(text="Scarico TLE…" if forza else "Carico TLE…")
+        threading.Thread(target=lambda: self._carica_tle_worker(forza), daemon=True).start()
 
-    def _carica_tle_worker(self):
-        path, agg, msg = SAT.scarica_tle(CACHE_DIR, max_age_ore=6)
-        self._sats = SAT.carica_satelliti(path) if path else {}
+    def _carica_tle_worker(self, forza=False):
+        path, agg, msg = SAT.scarica_tle(CACHE_DIR, max_age_ore=6, forza=forza)
+        # Fonde i TLE di Celestrak con quelli inseriti a mano (persistenti).
+        self._sats = SAT.carica_satelliti_e_manuali(CACHE_DIR, path)
+        eta = SAT.eta_cache_ore(CACHE_DIR)
+        if eta is not None:
+            msg = f"{msg} · TLE di {eta:.0f}h fa"
         self.after(0, lambda: (self._aggiorna_menu(), self._calcola(msg)))
+
+    def _aggiorna_tle(self):
+        """Forza il download dei TLE da Celestrak, ignorando la cache."""
+        self._carica_e_calcola(forza=True)
+
+    def _dialog_tle_manuale(self):
+        """Finestra per incollare un TLE a mano (satelliti non nel gruppo
+        amateur di Celestrak). Viene salvato in modo persistente e unito."""
+        win = ctk.CTkToplevel(self)
+        win.title("Inserisci TLE manuale")
+        win.geometry("540x330")
+        win.resizable(False, False)
+        win.after(60, lambda: (win.lift(), win.focus_force()))
+        ctk.CTkLabel(win, text="Incolla il TLE completo (3 righe)",
+                     font=ctk.CTkFont(size=13, weight="bold")).pack(pady=(14, 2))
+        ctk.CTkLabel(win, justify="left", text_color=MUT, font=ctk.CTkFont(size=10),
+                     text=("Riga 1: nome del satellite\nRighe 2-3: le due righe di elementi "
+                           "(iniziano con '1 ' e '2 ')")).pack()
+        txt = ctk.CTkTextbox(win, width=500, height=130,
+                             font=ctk.CTkFont(family="Consolas", size=11))
+        txt.pack(padx=18, pady=10)
+        txt.insert("1.0", "ISS (ZARYA)\n1 25544U ...\n2 25544 ...")
+        lbl = ctk.CTkLabel(win, text="", text_color=MUT)
+        lbl.pack()
+
+        def salva():
+            righe = [r.strip() for r in txt.get("1.0", "end").splitlines() if r.strip()]
+            if len(righe) < 3:
+                lbl.configure(text="Servono 3 righe: nome, riga 1, riga 2.",
+                              text_color="#e0a44a")
+                return
+            nome, l1, l2 = righe[0], righe[1], righe[2]
+            ok, msg = SAT.salva_tle_manuale(CACHE_DIR, nome, l1, l2)
+            lbl.configure(text=msg, text_color=("#5fd08f" if ok else "#e0a44a"))
+            if ok:
+                try:
+                    self._selezionati.add(nome)
+                    self._salva_selezione()
+                except Exception:
+                    pass
+                self.var_sat.set(nome)
+                self._sat_corrente = nome
+                self._carica_e_calcola()
+                win.after(1000, win.destroy)
+
+        ctk.CTkButton(win, text="💾 Salva TLE", command=salva,
+                      fg_color="#276749", hover_color="#2F855A").pack(pady=10)
 
     def _aggiorna_menu(self):
         disp = [n for n in sorted(self._sats.keys()) if n in self._selezionati] or \
@@ -408,9 +502,51 @@ class SatellitiDialog(ctk.CTkToplevel):
                               f"Da te:  El {el:.1f}°   Az {az:.0f}° {SAT.punto_cardinale(az)}   "
                               f"Dist {dist:.0f} km\n"
                               f"Visibile ora: {sopra}   ·   Footprint {raggio:.0f} km"))
+                    self._aggiorna_puntamento(el, az)
                 self.lbl_map.configure(text=f"{nome} — posizione in tempo reale")
                 self.canvas.draw_idle()
         self.after(INTERVALLO_LIVE_MS, self._aggiorna_live)
+
+    def _aggiorna_puntamento(self, el, az):
+        """Aggiorna il riquadro grande 'PUNTAMENTO ANTENNA':
+        - satellite visibile (El>0): Az/El live in verde ('punta qui');
+        - sotto l'orizzonte: Az del prossimo AOS in ambra, con ora e
+          minuti al sorgere ('pre-punta')."""
+        try:
+            if el > 0:
+                self.lbl_punta.configure(
+                    text=f"Az {az:.0f}° {SAT.punto_cardinale(az)}   ·   El {el:.0f}°",
+                    text_color="#5fd08f")
+                self.box_punta.configure(border_color="#2f9e5e", fg_color="#12281c")
+                self.lbl_punta_sub.configure(
+                    text="🟢 VISIBILE ORA — punta l'antenna qui", text_color="#5fd08f")
+                return
+            # sotto l'orizzonte: cerca il prossimo passaggio
+            now = datetime.now(timezone.utc)
+            prossimo = None
+            for p in self._passaggi:
+                if p.get("aos") and p["aos"] > now:
+                    prossimo = p
+                    break
+            if prossimo:
+                azp = prossimo["az_aos"]
+                dt_min = (prossimo["aos"] - now).total_seconds() / 60.0
+                ora_loc = prossimo["aos"].astimezone().strftime("%H:%M")
+                self.lbl_punta.configure(
+                    text=f"Az {azp:.0f}° {SAT.punto_cardinale(azp)}",
+                    text_color="#e0a44a")
+                self.box_punta.configure(border_color="#5a4a2a", fg_color="#241d10")
+                self.lbl_punta_sub.configure(
+                    text=(f"pre-punta · sorge alle {ora_loc} (tra {dt_min:.0f} min)"
+                          f"  ·  El max {prossimo.get('el_max', 0) or 0:.0f}°"),
+                    text_color="#e0a44a")
+            else:
+                self.lbl_punta.configure(text="—", text_color=MUT)
+                self.box_punta.configure(border_color="#2a3c5a", fg_color="#12233d")
+                self.lbl_punta_sub.configure(text="nessun passaggio in vista",
+                                             text_color=MUT)
+        except Exception:
+            pass
 
     def _chiudi(self):
         self._live_on = False

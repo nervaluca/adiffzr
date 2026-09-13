@@ -108,6 +108,60 @@ def carica_satelliti(tle_path):
     return sats
 
 
+def _manuali_path(cache_dir):
+    return os.path.join(cache_dir, "tle_manuali.txt")
+
+
+def eta_cache_ore(cache_dir):
+    """Ore trascorse dall'ultimo aggiornamento della cache TLE Celestrak,
+    o None se il file non esiste."""
+    p = _cache_path(cache_dir)
+    if not os.path.exists(p):
+        return None
+    return (time.time() - os.path.getmtime(p)) / 3600.0
+
+
+def salva_tle_manuale(cache_dir, nome, l1, l2):
+    """Valida e salva un TLE inserito a mano in tle_manuali.txt (persistente,
+    non toccato dal refresh automatico). Ritorna (ok, messaggio)."""
+    nome = (nome or "").strip()
+    l1 = (l1 or "").strip()
+    l2 = (l2 or "").strip()
+    if not nome:
+        return False, "Nome satellite mancante."
+    if not (l1.startswith("1 ") and l2.startswith("2 ")):
+        return False, "Le due righe elementi devono iniziare con '1 ' e '2 ' (formato TLE)."
+    if SKYFIELD_OK:
+        try:
+            ts = load.timescale()
+            EarthSatellite(l1, l2, nome, ts)
+        except Exception as e:
+            return False, "TLE non valido: " + str(e)
+    os.makedirs(cache_dir, exist_ok=True)
+    path = _manuali_path(cache_dir)
+    blocchi = []
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            righe = [x.rstrip("\n") for x in f if x.strip()]
+        for i in range(0, len(righe) - 2, 3):
+            if righe[i].strip().upper() != nome.upper():
+                blocchi.append((righe[i].strip(), righe[i + 1].strip(), righe[i + 2].strip()))
+    blocchi.append((nome, l1, l2))
+    with open(path, "w", encoding="utf-8") as f:
+        for n, a, b in blocchi:
+            f.write(n + "\n" + a + "\n" + b + "\n")
+    return True, "TLE salvato per " + nome
+
+
+def carica_satelliti_e_manuali(cache_dir, path_celestrak):
+    """Carica i satelliti Celestrak + quelli manuali, uniti (i manuali hanno
+    priorita' in caso di stesso nome)."""
+    sats = carica_satelliti(path_celestrak) if path_celestrak else {}
+    manuali = carica_satelliti(_manuali_path(cache_dir))
+    sats.update(manuali)
+    return sats
+
+
 def prossimi_passaggi(sats, lat, lon, elev_m=0.0, ore=24, elev_min=10.0,
                       solo=None, max_passaggi=200):
     """

@@ -2,9 +2,6 @@ import os
 import sys
 
 _this_dir = os.path.dirname(os.path.abspath(__file__))
-_target_pkg = r'C:\Users\nerva\Desktop\printlog\innosetup3.2\ADIF_FZR_Modular'
-if _target_pkg not in sys.path:
-    sys.path.insert(0, _target_pkg)
 if _this_dir not in sys.path:
     sys.path.insert(0, _this_dir)
 
@@ -16,6 +13,26 @@ import subprocess
 import tempfile
 import adif_io
 from config import T
+import re
+import json as _cl_json
+
+
+_TQSL_EXIT_CODES_IT = {
+    0:  "Successo: tutti i QSO sono stati firmati e caricati.",
+    1:  "Operazione annullata dall'utente.",
+    2:  "Il log è stato rifiutato dal server LoTW.",
+    3:  "Risposta inattesa dal server LoTW.",
+    4:  "Si è verificato un errore in tqsl.",
+    5:  "Errore in tqsllib (nome file o formato non valido).",
+    6:  "Impossibile aprire il file di input.",
+    7:  "Impossibile aprire il file di output.",
+    8:  "Nessun QSO processato: erano tutti duplicati o fuori intervallo date.",
+    9:  "Alcuni QSO sono stati processati, altri ignorati perché duplicati o fuori intervallo date.",
+    10: "Errore di sintassi nel comando.",
+    11: "Connessione di rete a LoTW fallita.",
+    12: "Errore sconosciuto.",
+    13: "Il database dei duplicati di TQSL è bloccato (un'altra istanza di tqsl è in esecuzione?).",
+}
 
 class CloudlogUploader:
     """Client minimale per l'endpoint ufficiale POST /index.php/api/qso di
@@ -486,16 +503,32 @@ class LotwDownloader:
     def __init__(self, username, password):
         self.username = username.strip()
         self.password = password.strip()
+        self.last_qsl = ""   # valore APP_LoTW_LASTQSL per il sync incrementale
 
-    def download(self, qsl_since="", owncall=""):
-        """Scarica l'ADIF. Ritorna (ok:bool, adif_text:str, msg:str)."""
+    def download(self, qsl_since="", owncall="", qsl_detail=False,
+                 startdate="", enddate=""):
+        """Scarica l'ADIF. Ritorna (ok:bool, adif_text:str, msg:str).
+
+        qsl_detail=True aggiunge qso_qsldetail=yes: LoTW include allora i
+        campi di location (dxcc, cqz, ituz, gridsquare, state, cnty, iota,
+        country, cont) necessari per l'allineamento del log agli award.
+        startdate/enddate (YYYY-MM-DD) filtrano per DATA DEL QSO: utili per
+        allineare un anno alla volta ed evitare download enormi.
+        Dopo il download, self.last_qsl contiene APP_LoTW_LASTQSL, da usare
+        come qsl_since alla chiamata successiva (sync incrementale)."""
         params = {
             "login":     self.username,
             "password":  self.password,
             "qso_query": "yes",
         }
+        if qsl_detail:
+            params["qso_qsldetail"] = "yes"
         if qsl_since.strip():
             params["qso_qslsince"] = qsl_since.strip()
+        if startdate.strip():
+            params["qso_startdate"] = startdate.strip()
+        if enddate.strip():
+            params["qso_enddate"] = enddate.strip()
         if owncall.strip():
             params["qso_owncall"] = owncall.strip().upper()
 
@@ -512,6 +545,12 @@ class LotwDownloader:
                 return False, "", "Credenziali LoTW non valide o account bloccato."
             if "<eoh>" not in raw.lower() and "<eor>" not in raw.lower():
                 return False, "", f"Risposta inattesa da LoTW:\n{raw[:300]}"
+
+            # Marker per il sync incrementale: <APP_LoTW_LASTQSL:19>YYYY-MM-DD HH:MM:SS
+            m = re.search(r"<APP_LoTW_LASTQSL:\d+>\s*(\d{4}-\d{2}-\d{2})",
+                          raw, re.IGNORECASE)
+            if m:
+                self.last_qsl = m.group(1)
             return True, raw, "OK"
         except urllib.error.HTTPError as e:
             return False, "", f"HTTP {e.code}: {e.reason}"

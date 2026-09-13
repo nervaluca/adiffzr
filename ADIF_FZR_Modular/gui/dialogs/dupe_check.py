@@ -2,9 +2,6 @@ import os
 import sys
 
 _this_dir = os.path.dirname(os.path.abspath(__file__))
-_target_pkg = r'C:\Users\nerva\Desktop\printlog\innosetup3.2\ADIF_FZR_Modular'
-if _target_pkg not in sys.path:
-    sys.path.insert(0, _target_pkg)
 if _this_dir not in sys.path:
     sys.path.insert(0, _this_dir)
 
@@ -21,7 +18,9 @@ class DuplicatiDialog(ctk.CTkToplevel):
         self.title(T("dup_titolo"))
         self.geometry("920x640")
         self.resizable(True, True)
-        self.grab_set()
+        # Non modale: così la finestra si può ridurre a icona e compare
+        # nella taskbar. La porto solo in primo piano all'apertura.
+        self.after(80, self._porta_avanti)
         self.app_ref = app_ref   # istanza ADIFtoPDFApp: legge/scrive app_ref.qsos_caricati
         self.gruppi_dup = []
         self._iid_to_qso = {}
@@ -338,6 +337,17 @@ class DuplicatiDialog(ctk.CTkToplevel):
         except Exception:
             pass
         super().destroy()
+
+    def _porta_avanti(self):
+        """Porta la finestra realmente in primo piano all'apertura,
+        senza lasciarla permanentemente sempre-in-primo-piano."""
+        try:
+            self.lift()
+            self.attributes("-topmost", True)
+            self.focus_force()
+            self.after(150, lambda: self.attributes("-topmost", False))
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────────

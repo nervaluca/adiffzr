@@ -2,21 +2,26 @@ import os
 import sys
 
 _this_dir = os.path.dirname(os.path.abspath(__file__))
-_target_pkg = r'C:\Users\nerva\Desktop\printlog\innosetup3.2\ADIF_FZR_Modular'
-if _target_pkg not in sys.path:
-    sys.path.insert(0, _target_pkg)
 if _this_dir not in sys.path:
     sys.path.insert(0, _this_dir)
 
 import os
 import json
+import math
 import customtkinter as ctk
 from tkinter import filedialog, messagebox, colorchooser
 import tkinter.ttk as _ttk
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, LETTER
 from reportlab.pdfgen import canvas
+from reportlab.lib import colors
 from config import T
 from utils.dxcc import dxcc_da_nominativo
+from utils.formatting import chiedi_cartella_output
+from gui.widgets import CalendarPopup
+import re
+from datetime import datetime
+import urllib.request
+import urllib.parse
 
 class QSLCardDesignerDialog(ctk.CTkToplevel):
     """Editor visuale per QSL card 140×90mm.
@@ -1815,10 +1820,14 @@ class QSLMasterDialog(ctk.CTkToplevel):
         else:
             foglio_info = f"  |  {per_foglio}/foglio"
 
-        if hasattr(self, '_count_after'):
-            self.after_cancel(self._count_after)
-        self._count_after = self.after(80, lambda t=f"{etich_info} / {tot} vis.{foglio_info}":
-            self.lbl_count.configure(text=t) if self.winfo_exists() else None)
+        # Aggiornamento immediato dell'etichetta conteggio (in precedenza era
+        # ritardato con after(80): se il callback non scattava, il numero
+        # restava bloccato a 0 anche selezionando).
+        try:
+            if self.winfo_exists():
+                self.lbl_count.configure(text=f"{etich_info} / {tot} vis.{foglio_info}")
+        except Exception:
+            pass
 
     # ── Formato ───────────────────────────────────────
     def _formato_attivo(self):

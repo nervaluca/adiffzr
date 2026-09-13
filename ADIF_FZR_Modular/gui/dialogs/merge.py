@@ -2,9 +2,6 @@ import os
 import sys
 
 _this_dir = os.path.dirname(os.path.abspath(__file__))
-_target_pkg = r'C:\Users\nerva\Desktop\printlog\innosetup3.2\ADIF_FZR_Modular'
-if _target_pkg not in sys.path:
-    sys.path.insert(0, _target_pkg)
 if _this_dir not in sys.path:
     sys.path.insert(0, _this_dir)
 
@@ -16,6 +13,7 @@ import theme as TH
 from tkinter import filedialog, messagebox
 import tkinter.ttk as _ttk
 from config import T
+from datetime import datetime
 
 class UnisciDialog(ctk.CTkToplevel):
     def __init__(self, parent):
@@ -153,42 +151,60 @@ class UnisciDialog(ctk.CTkToplevel):
                 mycall = line.split(":",1)[1].strip().upper()
             if not line.upper().startswith("QSO:"):
                 continue
-            # Formato Cabrillo: QSO: freq mode date time mycall rst_s exch_s call rst_r exch_r
+            # Cabrillo: QSO: freq mode date time  MYCALL sent-exch...  DXCALL rcvd-exch...
+            # Lo scambio (sent/received) ha di norma la STESSA lunghezza: da qui
+            # ricavo l'indice del call DX in modo robusto (niente euristiche).
             parts = line[4:].split()
-            if len(parts) < 8:
+            if len(parts) < 6:
                 continue
             try:
                 freq_khz = parts[0].strip()
                 modo_cbr = parts[1].strip().upper()
                 data_cbr = parts[2].strip()   # YYYY-MM-DD
                 ora_cbr  = parts[3].strip()   # HHMM
-                call_tx  = parts[4].strip().upper()
-                rst_s    = parts[5].strip() if len(parts) > 5 else "59"
-                # exch_s potrebbe mancare — call DX è dopo
-                # Cerca il callsign DX (non numerico, non rst)
-                dx_idx = 7 if len(parts) > 7 else 6
-                call_dx  = parts[dx_idx].strip().upper() if len(parts) > dx_idx else ""
-                rst_r    = parts[dx_idx+1].strip() if len(parts) > dx_idx+1 else "59"
-                # Converti data YYYY-MM-DD → YYYYMMDD
-                data_adif = data_cbr.replace("-","")
-                # Converti ora HHMM → HHMM (già ok)
-                ora_adif = ora_cbr.replace(":","")[:4]
-                # Banda da frequenza KHz
+                call_tx  = parts[4].strip().upper()   # mycall (stazione inviante)
+
+                M = len(parts) - 4            # token da mycall in poi
+                if M >= 2 and M % 2 == 0:
+                    E = (M - 2) // 2
+                    dx_idx = 5 + E
+                    call_dx   = parts[dx_idx].strip().upper()
+                    sent_exch = parts[5:5+E]
+                    rcvd_exch = parts[dx_idx+1:dx_idx+1+E]
+                else:
+                    # Struttura non simmetrica: ripiego su rst+call+rst
+                    call_dx   = parts[6].strip().upper() if len(parts) > 6 else ""
+                    sent_exch = parts[5:6]
+                    rcvd_exch = parts[7:8]
+
+                def _is_grid(t):
+                    return bool(_re.match(r'^[A-R]{2}[0-9]{2}([A-X]{2})?$', t.upper()))
+                def _is_rst(t):
+                    return bool(_re.match(r'^\d{2,3}$', t))
+                def _pick(lst, pred, default=""):
+                    for t in lst:
+                        if pred(t):
+                            return t
+                    return default
+                rst_s  = _pick(sent_exch, _is_rst, "59")
+                rst_r  = _pick(rcvd_exch, _is_rst, "59")
+                grid_r = _pick(rcvd_exch, _is_grid, "")
+
+                data_adif = data_cbr.replace("-", "")
+                ora_adif  = ora_cbr.replace(":", "")[:4]
                 banda = FREQ_MAP.get(freq_khz, "")
                 if not banda:
-                    # prova arrotondamento a centinaia
                     try:
                         fk = int(freq_khz)
                         for fref, b in FREQ_MAP.items():
                             if abs(fk - int(fref)) < 200:
                                 banda = b; break
-                    except: pass
-                # Frequenza in MHz
+                    except Exception:
+                        pass
                 try: freq_mhz = f"{int(freq_khz)/1000:.3f}"
-                except: freq_mhz = ""
-                # Modo
+                except Exception: freq_mhz = ""
                 modo = MODE_MAP.get(modo_cbr, modo_cbr)
-                if not call_dx or len(call_dx) < 3:
+                if not call_dx or len(call_dx) < 3 or _is_grid(call_dx):
                     continue
                 qso = {
                     'call':             call_dx,
@@ -201,6 +217,12 @@ class UnisciDialog(ctk.CTkToplevel):
                     'rst_rcvd':         rst_r[:3],
                     'station_callsign': mycall or call_tx,
                 }
+                if grid_r:
+                    qso['gridsquare'] = grid_r
+                if sent_exch:
+                    qso['stx_string'] = " ".join(sent_exch)
+                if rcvd_exch:
+                    qso['srx_string'] = " ".join(rcvd_exch)
                 qsos.append(qso)
             except Exception:
                 continue

@@ -2,9 +2,6 @@ import os
 import sys
 
 _this_dir = os.path.dirname(os.path.abspath(__file__))
-_target_pkg = r'C:\Users\nerva\Desktop\printlog\innosetup3.2\ADIF_FZR_Modular'
-if _target_pkg not in sys.path:
-    sys.path.insert(0, _target_pkg)
 if _this_dir not in sys.path:
     sys.path.insert(0, _this_dir)
 
@@ -20,6 +17,205 @@ from net.uploaders import (
     EqslUploader, QO100Uploader, LotwDownloader, EqslDownloader
 )
 from net.hamqth import HamQTHClient
+from net import lotw_align
+import re
+import datetime
+from gui.widgets import CalendarPopup
+
+
+# ═══ Funzioni download/merge/SWL — ripristinate dalla 2.4 (perse nello split) ═══
+def _normalizza_modo_merge(modo, submode=""):
+    """Normalizza il modo per il confronto tra log locali e LoTW/eQSL.
+    LoTW spesso usa APP_LOTW_MODEGROUP (DATA, PHONE ecc.) come modo,
+    ma nel campo MODE manda già FT8/JT65/SSB ecc. — il problema è quando
+    il log locale ha MODE=FT4 e LoTW manda MODE=MFSK+SUBMODE=FT4, oppure
+    viceversa. Questa funzione restituisce sempre la forma 'canonica'
+    che permette il confronto."""
+    m = str(modo).upper().strip()
+    s = str(submode).upper().strip()
+
+    # MFSK con submode esplicito (es. LoTW: MODE=MFSK SUBMODE=FT4)
+    # → usa il submode come modo canonico
+    if m == "MFSK" and s in ("FT4", "FT8", "FT2", "JS8", "VARA"):
+        return s
+
+    # Sinonimi SSB
+    if m in ("USB", "LSB", "AM", "FM"):
+        return "SSB" if m in ("USB", "LSB") else m
+
+    # DATA generico → lascia DATA così i QSO "DATA senza submode" matchano
+    # tra loro ma non con FT8/JT65 specifici
+    return m
+
+
+def _normalizza_data_download(valore, formato="lotw"):
+    """Accetta YYYYMMDD, YYYY-MM-DD o DD/MM/YYYY e restituisce il formato richiesto."""
+    s = str(valore or "").strip()
+    if not s:
+        return ""
+    m = re.match(r"^(\d{4})[-/](\d{2})[-/](\d{2})$", s)
+    if m:
+        y, mo, d = m.groups()
+    else:
+        m = re.match(r"^(\d{2})/(\d{2})/(\d{4})$", s)
+        if m:
+            d, mo, y = m.groups()
+        else:
+            m = re.match(r"^(\d{4})(\d{2})(\d{2})", s)
+            if not m:
+                return s
+            y, mo, d = m.groups()
+    return f"{y}-{mo}-{d}" if formato == "lotw" else f"{y}{mo}{d}"
+
+
+def _banda_da_freq_merge(freq):
+    """Ricava una banda ADIF da FREQ in MHz quando il download non contiene BAND."""
+    try:
+        f = float(str(freq or "").replace(",", ".").strip())
+    except Exception:
+        return ""
+    ranges = [
+        (0.1357, 0.1378, "2190m"), (0.472, 0.479, "630m"),
+        (1.8, 2.0, "160m"), (3.5, 4.0, "80m"), (5.0, 5.5, "60m"),
+        (7.0, 7.3, "40m"), (10.1, 10.15, "30m"), (14.0, 14.35, "20m"),
+        (18.068, 18.168, "17m"), (21.0, 21.45, "15m"),
+        (24.89, 24.99, "12m"), (28.0, 29.7, "10m"), (50.0, 54.0, "6m"),
+        (70.0, 71.0, "4m"), (144.0, 148.0, "2m"), (222.0, 225.0, "1.25m"),
+        (420.0, 450.0, "70cm"), (902.0, 928.0, "33cm"),
+        (1240.0, 1300.0, "23cm"), (2300.0, 2450.0, "13cm"),
+        (3300.0, 3500.0, "9cm"), (5650.0, 5925.0, "6cm"),
+        (10000.0, 10500.0, "3cm"),
+    ]
+    for low, high, band in ranges:
+        if low <= f <= high:
+            return band.upper()
+    return ""
+
+
+def _banda_qso_merge(qso):
+    band = str(qso.get('band', '') or qso.get('BAND', '')).upper().strip()
+    if band:
+        return band
+    return _banda_da_freq_merge(qso.get('freq', '') or qso.get('FREQ', ''))
+
+
+def _date_vicine(d1, d2, tolleranza_giorni=1):
+    """True se le due date YYYYMMDD differiscono al massimo di tolleranza_giorni."""
+    try:
+        from datetime import datetime as _dt
+        t1 = _dt.strptime(str(d1).strip(), "%Y%m%d")
+        t2 = _dt.strptime(str(d2).strip(), "%Y%m%d")
+        return abs((t1 - t2).days) <= tolleranza_giorni
+    except Exception:
+        return d1 == d2
+
+
+def _merge_download_in_log(app_ref, qsos_scaricati, campo_rcvd, campo_date):
+    """Funzione condivisa per LoTW ed eQSL download.
+    Confronta qsos_scaricati con il log aperto in app_ref su:
+      Callsign + Data (±1 giorno) + Banda + Modo (normalizzato)
+    Per ogni match: imposta campo_rcvd='Y' e campo_date=data conferma.
+    Ritorna (n_aggiornati, qsos_senza_match)."""
+
+    def _dati_match(qso):
+        modo = _normalizza_modo_merge(
+            qso.get('mode', '') or qso.get('MODE', ''),
+            qso.get('submode', '') or qso.get('SUBMODE', ''))
+        return (
+            str(qso.get('call', '') or qso.get('CALL', '')).upper().strip(),
+            str(qso.get('qso_date', '') or qso.get('QSO_DATE', '')).strip(),
+            _banda_qso_merge(qso),
+            modo,
+        )
+
+    # Indice per callsign; data/banda/modo vengono verificati nel confronto finale.
+    indice = {}
+    for q in app_ref.qsos_caricati:
+        call, data, band, modo = _dati_match(q)
+        if call and data:
+            indice.setdefault(call, []).append((data, band, modo, q))
+
+    n_aggiornati = 0
+    senza_match = []
+
+    for qs in qsos_scaricati:
+        call_d, data_d, band_d, modo_d = _dati_match(qs)
+
+        # Cerca tra i QSO del log con lo stesso callsign
+        candidati = indice.get(call_d, [])
+        corrispondenti = []
+
+        for (data_l, band_l, modo_l, q_log) in candidati:
+            # Match esatto su data + banda + modo
+            if data_l == data_d and band_l == band_d and modo_l == modo_d:
+                corrispondenti.append(q_log)
+
+        if not corrispondenti:
+            # Tolleranza ±1 giorno sulla data (QSO vicini mezzanotte UTC)
+            for (data_l, band_l, modo_l, q_log) in candidati:
+                if (band_l == band_d and modo_l == modo_d
+                        and _date_vicine(data_l, data_d, 1)):
+                    corrispondenti.append(q_log)
+
+        if corrispondenti:
+            data_conf = str(qs.get('qslrdate', '') or
+                            qs.get('lotw_qslrdate', '') or
+                            qs.get('eqsl_qslrdate', '')).strip()
+            for q_log in corrispondenti:
+                q_log[campo_rcvd] = 'Y'
+                if data_conf and data_conf != '00000000':
+                    q_log[campo_date] = data_conf
+            n_aggiornati += 1
+        else:
+            senza_match.append(qs)
+
+    return n_aggiornati, senza_match
+
+
+def _salva_non_match(app_ref, parent_win, senza_match, prefisso):
+    """Chiede dove salvare i QSO senza match e li scrive come ADIF."""
+    nome_def = f"{prefisso}_non_confermati.adif"
+    save_path = filedialog.asksaveasfilename(
+        parent=parent_win,
+        title=T("dl_salva_nonmatch"),
+        defaultextension=".adif",
+        filetypes=[("ADIF files", "*.adif"), ("All files", "*.*")],
+        initialfile=nome_def)
+    if not save_path:
+        return
+    try:
+        app_ref._scrivi_adif(save_path, senza_match)
+        messagebox.showinfo(T("successo"),
+            T("dl_nonmatch_salvati", n=len(senza_match), path=os.path.basename(save_path)))
+    except Exception as ex:
+        messagebox.showerror(T("errore"), str(ex))
+
+
+
+def _is_swl_call(call):
+    """Ritorna True se il callsign sembra uno SWL.
+    Pattern riconosciuti:
+      /SWL o -SWL in coda          → IW1FZR/SWL, DL1ABC-SWL
+      Termina con SWL               → 00123SWL
+      Formato eQSL SWL              → SP-0386-GD, IT-1234-AB, DL-0001-XX
+        (PREFISSO 1-3 lettere) - (NUMERO 3-6 cifre) - (SUFFISSO 1-4 lettere)
+      Numeri iniziali senza prefisso ITU → 00001, 12345
+    """
+    c = str(call).upper().strip()
+    if not c:
+        return False
+    # Suffisso /SWL o -SWL
+    if '/SWL' in c or c.endswith('-SWL') or c.endswith('SWL'):
+        return True
+    # Formato eQSL SWL: XX-NNNN-YY  (es. SP-0386-GD, IT-1234-AB)
+    if re.match(r'^[A-Z]{1,3}-\d{3,6}-[A-Z]{1,4}$', c):
+        return True
+    # Numeri iniziali puri (formato SWL numerico)
+    if re.match(r'^\d{3,}', c):
+        return True
+    return False
+
+
 
 class CloudlogUploadDialog(ctk.CTkToplevel):
     """Finestra per il caricamento dei QSO verso Cloudlog via API ufficiale."""
@@ -763,12 +959,17 @@ class LotwDownloadDialog(ctk.CTkToplevel):
             qsl_since=dal_conv,
             owncall=self.entry_call.get().strip())
 
+        # La finestra potrebbe essere stata chiusa durante il download (GUI
+        # bloccata): in tal caso non toccare più i suoi widget.
+        if not self.winfo_exists():
+            return
+
         self.progress.stop()
         self.progress.configure(mode="determinate")
         self.btn_dl.configure(state="normal")
 
         if not ok:
-            self.lbl_stato.configure(text="✗ Errore", text_color=TH.DANGER)
+            self.lbl_stato.configure(text=T("st_errore"), text_color=TH.DANGER)
             messagebox.showerror(T("errore"), T("lwd_err", msg=msg))
             return
 
@@ -788,24 +989,238 @@ class LotwDownloadDialog(ctk.CTkToplevel):
                 campo_rcvd='lotw_qsl_rcvd',
                 campo_date='lotw_qslrdate')
             self.app_ref._aggiorna_tree()
+            # Chiudo il dialogo PRIMA di aprire messagebox/file-dialog, così
+            # nessuno resta agganciato a una finestra in via di distruzione.
+            self.destroy()
 
             if senza_match:
                 risposta = messagebox.askyesno(
                     T("dl_merge_titolo"),
                     T("dl_merge_riepilogo", ok=n_ok, no=len(senza_match)))
                 if risposta:
-                    _salva_non_match(self.app_ref, self, senza_match, "lotw")
+                    _salva_non_match(self.app_ref, self.app_ref, senza_match, "lotw")
             else:
                 messagebox.showinfo(T("dl_merge_titolo"),
                     T("dl_merge_tutti_ok", ok=n_ok))
         except Exception as ex:
             messagebox.showerror(T("errore"), str(ex))
-        self.destroy()
 
 
 # ─────────────────────────────────────────────
 #  eQSL — download ADIF inbox (QSL ricevute)
 # ─────────────────────────────────────────────
+
+
+class AllineaLotwDialog(ctk.CTkToplevel):
+    """Finestra 'Allinea log a LoTW': scarica le QSL con dettaglio location
+    (qso_qsldetail=yes) e allinea i campi del log (DXCC, zone, locator,
+    stato/contea, IOTA...) sui QSO confermati. Campi e politica di scrittura
+    personalizzabili. Flusso: Anteprima (diff) -> Applica (con undo)."""
+
+    def __init__(self, parent, lw_user, lw_pass, default_call="", profilo_nome=None):
+        super().__init__(parent)
+        self.title(T("ttl_allinea"))
+        self.geometry("640x620")
+        self.resizable(False, True)
+        self.grab_set(); self.lift(); self.focus_force()
+        self.app_ref = parent
+        self.downloader = LotwDownloader(lw_user, lw_pass)
+        self.default_call = default_call
+        self.profilo_nome = profilo_nome
+        self._diff = []
+        self._scaricati = []
+
+        # Preset (campi + politiche + last_qsl) dal profilo, se presente.
+        campi_sel, politiche, last_qsl = self._carica_preset()
+
+        ctk.CTkLabel(self, text=T("menu_allinea_lotw"),
+                     font=ctk.CTkFont(size=15, weight="bold")).pack(pady=(14, 2), padx=20)
+        ctk.CTkLabel(self, text=lw_user, font=ctk.CTkFont(size=10),
+                     text_color="gray").pack(pady=(0, 8))
+
+        # Riga: Anno (per allineare un anno alla volta) / callsign owncall
+        form = ctk.CTkFrame(self, fg_color="transparent")
+        form.pack(fill="x", padx=24)
+        ctk.CTkLabel(form, text=T("lbl_anno_qso"), anchor="w",
+                     font=ctk.CTkFont(size=11)).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(form, text=T("lbl_callsign_all"), anchor="w",
+                     font=ctk.CTkFont(size=11)).grid(row=0, column=1, sticky="w", padx=(12, 0))
+        self.var_anno = ctk.StringVar(value=T("opt_tutte"))
+        ctk.CTkOptionMenu(form, variable=self.var_anno, values=self._anni_log(),
+                          width=150, height=28).grid(row=1, column=0, sticky="w", pady=(0, 6))
+        self.entry_call = ctk.CTkEntry(form, width=150,
+                                       placeholder_text=default_call or "vuoto = tutti")
+        if default_call:
+            self.entry_call.insert(0, default_call)
+        self.entry_call.grid(row=1, column=1, sticky="w", padx=(12, 0), pady=(0, 6))
+
+        # Selettore campi + politica
+        ctk.CTkLabel(self, text=T("lbl_campi_pol"),
+                     anchor="w", font=ctk.CTkFont(size=11, weight="bold")
+                     ).pack(fill="x", padx=24, pady=(6, 2))
+        scroll = ctk.CTkScrollableFrame(self, height=210, fg_color="transparent")
+        scroll.pack(fill="both", expand=True, padx=20, pady=(0, 4))
+
+        _POL_LABEL = {'overwrite': T("pol_overwrite"), 'fill': T("pol_fill"), 'skip': T("pol_skip")}
+        self._chk = {}
+        self._pol = {}
+        for campo, etichetta, _def in lotw_align.CAMPI_LOTW:
+            row = ctk.CTkFrame(scroll, fg_color="transparent")
+            row.pack(fill="x", pady=2)
+            var = ctk.BooleanVar(value=(campo in campi_sel))
+            ctk.CTkCheckBox(row, text=f"{etichetta}  ({campo})", variable=var,
+                            font=ctk.CTkFont(size=11), width=260,
+                            ).pack(side="left", padx=(4, 8))
+            self._chk[campo] = var
+            pol_var = ctk.StringVar(value=_POL_LABEL[politiche.get(campo, 'overwrite')])
+            ctk.CTkOptionMenu(row, values=list(_POL_LABEL.values()),
+                              variable=pol_var, width=150, height=26,
+                              font=ctk.CTkFont(size=10)).pack(side="right", padx=4)
+            self._pol[campo] = pol_var
+        self._pol_label_inv = {v: k for k, v in _POL_LABEL.items()}
+
+        self.lbl_stato = ctk.CTkLabel(self, text="", font=ctk.CTkFont(size=11))
+        self.lbl_stato.pack(pady=2)
+        self.txt_diff = ctk.CTkTextbox(self, height=120, font=ctk.CTkFont(size=10))
+        self.txt_diff.pack(fill="both", expand=False, padx=20, pady=(0, 6))
+
+        frame_btn = ctk.CTkFrame(self, fg_color="transparent")
+        frame_btn.pack(fill="x", padx=24, pady=(0, 14))
+        self.btn_prev = ctk.CTkButton(frame_btn, text=T("btn_anteprima"), command=self._anteprima,
+                      height=36, fg_color=TH.PRIMARY,
+                      font=ctk.CTkFont(size=12, weight="bold"))
+        self.btn_prev.pack(side="left", expand=True, fill="x", padx=(0, 6))
+        self.btn_appl = ctk.CTkButton(frame_btn, text=T("btn_applica"), command=self._applica,
+                      height=36, fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS,
+                      state="disabled", font=ctk.CTkFont(size=12, weight="bold"))
+        self.btn_appl.pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ctk.CTkButton(frame_btn, text=T("btn_chiudi"), command=self.destroy,
+                      height=36, width=90, fg_color="#718096").pack(side="left")
+
+    # -- helpers preset ---------------------------------------------------
+    def _preset_dati(self):
+        campi = [c for c, v in self._chk.items() if v.get()]
+        politiche = {c: self._pol_label_inv[self._pol[c].get()] for c in self._pol}
+        return campi, politiche
+
+    def _carica_preset(self):
+        try:
+            profili = self.app_ref._carica_profili()
+            d = profili.get(self.profilo_nome, {}) if self.profilo_nome else {}
+            campi = d.get('lotw_align_campi') or lotw_align.campi_default()
+            pol = lotw_align.politiche_default()
+            pol.update(d.get('lotw_align_politiche', {}))
+            last = d.get('last_qsl', "")
+            return campi, pol, last
+        except Exception:
+            return lotw_align.campi_default(), lotw_align.politiche_default(), ""
+
+    def _salva_preset(self, last_qsl=None):
+        if not self.profilo_nome:
+            return
+        try:
+            profili = self.app_ref._carica_profili()
+            if self.profilo_nome not in profili:
+                return
+            campi, politiche = self._preset_dati()
+            profili[self.profilo_nome]['lotw_align_campi'] = campi
+            profili[self.profilo_nome]['lotw_align_politiche'] = politiche
+            if last_qsl:
+                profili[self.profilo_nome]['last_qsl'] = last_qsl
+            self.app_ref._salva_profili(profili)
+        except Exception:
+            pass
+
+    def _anni_log(self):
+        """Lista anni per il selettore: 'Tutti' + anni presenti nel log (desc)."""
+        anni = set()
+        for q in (self.app_ref.qsos_caricati or []):
+            d = str(q.get('qso_date', '') or q.get('QSO_DATE', '')).strip()
+            if len(d) >= 4 and d[:4].isdigit():
+                anni.add(d[:4])
+        return [T("opt_tutte")] + sorted(anni, reverse=True)
+
+    # -- flusso -----------------------------------------------------------
+    def _scarica(self):
+        if not self.app_ref.qsos_caricati:
+            messagebox.showwarning(T("attenzione"), T("dl_nessun_log"))
+            return False
+        anno = self.var_anno.get().strip()
+        startdate = enddate = ""
+        if anno and anno != T("opt_tutte") and anno.isdigit():
+            startdate = f"{anno}-01-01"
+            enddate = f"{anno}-12-31"
+            self.lbl_stato.configure(text=T("st_scarico_anno", anno=anno),
+                                     text_color="gray")
+        else:
+            self.lbl_stato.configure(text=T("st_scarico_tutto"),
+                                     text_color="gray")
+        self.update()
+        ok, adif_text, msg = self.downloader.download(
+            owncall=self.entry_call.get().strip(), qsl_detail=True,
+            startdate=startdate, enddate=enddate)
+        if not self.winfo_exists():
+            return False
+        if not ok:
+            self.lbl_stato.configure(text="✗ Errore", text_color=TH.DANGER)
+            messagebox.showerror(T("errore"), T("lwd_err", msg=msg))
+            return False
+        self._scaricati = lotw_align.parse_lotw_adif(adif_text)
+        if not self._scaricati:
+            self.lbl_stato.configure(text=T("st_zero_conf"),
+                                     text_color=TH.WARN_TEXT)
+            return False
+        return True
+
+    def _anteprima(self):
+        self.btn_prev.configure(state="disabled")
+        try:
+            if not self._scarica():
+                return
+            campi, politiche = self._preset_dati()
+            if not campi:
+                messagebox.showinfo(T("hdr_nessun_campo"), T("msg_nessun_campo"))
+                return
+            self._diff, stats = lotw_align.calcola_allineamento(
+                self.app_ref.qsos_caricati, self._scaricati, campi, politiche)
+            self.txt_diff.delete("1.0", "end")
+            if not self._diff:
+                self.txt_diff.insert("end", T("msg_gia_allineato", sc=len(self._scaricati), m=stats['match']))
+                self.lbl_stato.configure(text=T("st_gia_allineato"), text_color=TH.OK_TEXT)
+                self.btn_appl.configure(state="disabled")
+                self.btn_prev.configure(state="normal")
+                return
+            riepilogo = "  ".join(f"{c}:{n}" for c, n in stats['per_campo'].items())
+            self.lbl_stato.configure(
+                text=T("st_modifiche", mod=stats['modifiche'], m=stats['match'], rk=riepilogo),
+                text_color=TH.PRIMARY)
+            righe = []
+            for d in self._diff[:400]:
+                righe.append(f"{d['call']:9s} {d['banda']:4s} {d['campo']:10s} "
+                             f"'{d['old']}' → '{d['new']}'")
+            extra = "" if len(self._diff) <= 400 else T("msg_altre_mod", n=len(self._diff)-400)
+            self.txt_diff.delete("1.0", "end")
+            self.txt_diff.insert("end", "\n".join(righe) + extra)
+            self.btn_appl.configure(state="normal")
+        finally:
+            if self.winfo_exists():
+                self.btn_prev.configure(state="normal")
+
+    def _applica(self):
+        if not self._diff:
+            return
+        if not messagebox.askyesno(T("hdr_conferma"), T("msg_applicare", n=len(self._diff))):
+            return
+        self.app_ref._push_undo()
+        n = lotw_align.applica_allineamento(self._diff)
+        self.app_ref._aggiorna_tree()
+        if hasattr(self.app_ref, "_log_modificato"):
+            self.app_ref._log_modificato = True
+        self._salva_preset(last_qsl=self.downloader.last_qsl)
+        self.lbl_stato.configure(text=T("st_applicate", n=n), text_color=TH.OK_TEXT)
+        self.btn_appl.configure(state="disabled")
+        self._diff = []
+        messagebox.showinfo(T("hdr_all_completato"), T("msg_all_completato", n=n))
 
 
 class EqslDownloadDialog(ctk.CTkToplevel):
@@ -1398,125 +1813,10 @@ class EqslUnconfirmedDialog(ctk.CTkToplevel):
                 prog.after(0, _done)
 
             except Exception as ex:
+                _err_msg = str(ex)
                 def _err():
                     if prog.winfo_exists(): prog.destroy()
-                    messagebox.showerror("Errore upload", str(ex), parent=self)
+                    messagebox.showerror("Errore upload", _err_msg, parent=self)
                 prog.after(0, _err)
 
         _threading.Thread(target=_thread, daemon=True).start()
-        def _thread():
-            def _upd(t, p="", frac=None):
-                def _f():
-                    if prog.winfo_exists():
-                        lbl_fase.configure(text=t)
-                        lbl_p.configure(text=p)
-                        if frac is not None: bar.set(frac)
-                prog.after(0, _f)
-
-            # ── 1. Login eQSL con cookie jar ──
-            _upd("1/3 — Login su eQSL…")
-            try:
-                jar = _cj.CookieJar()
-                opener = urllib.request.build_opener(
-                    urllib.request.HTTPCookieProcessor(jar))
-                opener.addheaders = [('User-Agent', 'ADIF-FZR/2.4')]
-
-                login_url = "https://www.eqsl.cc/qslcard/LoginUser.cfm"
-                login_data = urllib.parse.urlencode({
-                    'Callsign': self.eq_user,
-                    'Password': self.eq_pass,
-                }).encode('utf-8')
-                resp = opener.open(login_url, login_data, timeout=15)
-                html_login = resp.read().decode('utf-8', errors='replace')
-
-                if 'invalid' in html_login.lower() or 'incorrect' in html_login.lower():
-                    prog.after(0, prog.destroy)
-                    prog.after(0, lambda: messagebox.showerror(
-                        "Errore login", "Credenziali eQSL non valide.", parent=self))
-                    return
-            except Exception as ex:
-                prog.after(0, prog.destroy)
-                prog.after(0, lambda: messagebox.showerror(
-                    "Errore", f"Impossibile connettersi a eQSL:\n{ex}", parent=self))
-                return
-
-            # ── 2. Scarica la pagina inbox non confermati ──
-            _upd("2/3 — Scarica inbox eQSL…", frac=0.2)
-            try:
-                inbox_url = ("https://www.eqsl.cc/qslcard/InBox.cfm"
-                             "?Confmd=N&SortBy=Date")
-                resp2 = opener.open(inbox_url, timeout=20)
-                html_inbox = resp2.read().decode('utf-8', errors='replace')
-
-                # Estrai coppie (call, qslid) dalla pagina inbox
-                # Pattern: ConfirmQSO.cfm?QSLID=12345 vicino al callsign
-                qslid_map = {}  # call.upper() → [qslid, ...]
-                for m in re.finditer(
-                        r'ConfirmQSO\.cfm\?QSLID=(\d+)',
-                        html_inbox, re.IGNORECASE):
-                    qslid = m.group(1)
-                    # Cerca il callsign nelle 500 chars precedenti
-                    start = max(0, m.start()-500)
-                    ctx = html_inbox[start:m.start()]
-                    # Il callsign dell'SWL è tipicamente in un link o td
-                    calls_near = re.findall(
-                        r'>([A-Z0-9]{2,3}-\d{3,6}-[A-Z]{1,4}|[A-Z0-9/]{4,12}SWL)<',
-                        ctx, re.IGNORECASE)
-                    for c in calls_near:
-                        c_up = c.upper().strip()
-                        if c_up not in qslid_map:
-                            qslid_map[c_up] = []
-                        qslid_map[c_up].append(qslid)
-            except Exception as ex:
-                prog.after(0, prog.destroy)
-                prog.after(0, lambda: messagebox.showerror(
-                    "Errore", f"Impossibile scaricare inbox eQSL:\n{ex}", parent=self))
-                return
-
-            # ── 3. Conferma ogni SWL trovato ──
-            _upd("3/3 — Invio conferme…", frac=0.4)
-            tot = len(qsos_swl)
-            for i, q in enumerate(qsos_swl):
-                call = str(q.get('call','')).upper().strip()
-                qslids = qslid_map.get(call, [])
-
-                def _upd_i(i=i, c=call):
-                    if prog.winfo_exists():
-                        bar.set(0.4 + 0.6*(i+1)/tot)
-                        lbl_n.configure(text=f"{i+1}/{tot}")
-                        lbl_p.configure(text=f"{c}…")
-                prog.after(0, _upd_i)
-
-                if not qslids:
-                    errori.append(f"{call}: QSLID non trovato nella inbox")
-                    n_err[0] += 1
-                    continue
-
-                for qslid in qslids[:1]:  # conferma solo il più recente
-                    try:
-                        conf_url = f"https://www.eqsl.cc/qslcard/ConfirmQSO.cfm?QSLID={qslid}"
-                        resp3 = opener.open(conf_url, timeout=15)
-                        html3 = resp3.read().decode('utf-8', errors='replace')
-                        if 'confirmed' in html3.lower() or 'success' in html3.lower() or qslid in html3:
-                            n_ok[0] += 1
-                        else:
-                            n_ok[0] += 1  # assume ok se no errore esplicito
-                    except Exception as ex:
-                        n_err[0] += 1
-                        errori.append(f"{call} (QSLID={qslid}): {ex}")
-
-                import time; time.sleep(0.3)
-
-            def _done():
-                if prog.winfo_exists(): prog.destroy()
-                msg = (f"✅ Conferme SWL inviate su eQSL.\n\n"
-                       f"✓ OK: {n_ok[0]}\n✗ Non trovati/Errori: {n_err[0]}")
-                if errori:
-                    msg += "\n\nDettaglio:\n" + "\n".join(errori[:5])
-                messagebox.showinfo("Completato", msg, parent=self)
-            prog.after(0, _done)
-
-        _threading.Thread(target=_thread, daemon=True).start()
-
-
-

@@ -2,9 +2,6 @@ import os
 import sys
 
 _this_dir = os.path.dirname(os.path.abspath(__file__))
-_target_pkg = r'C:\Users\nerva\Desktop\printlog\innosetup3.2\ADIF_FZR_Modular'
-if _target_pkg not in sys.path:
-    sys.path.insert(0, _target_pkg)
 if _this_dir not in sys.path:
     sys.path.insert(0, _this_dir)
 
@@ -19,6 +16,7 @@ import customtkinter as ctk
 from config import T
 from utils.dxcc import dxcc_da_nominativo
 from utils.maidenhead import distanza_bearing, locator_to_latlon, bearing_to_compass
+import json
 
 class DXClusterWindow(ctk.CTkToplevel):
     """Finestra DX Cluster: connessione telnet, spot in tempo reale,
@@ -55,12 +53,19 @@ class DXClusterWindow(ctk.CTkToplevel):
     }
 
     _BANDE_FILTRO = ["160M","80M","60M","40M","30M","20M","17M","15M","12M","10M","6M","2M","70CM","23CM"]
+    _BAND_RANGES = {"160M":(1800,2000),"80M":(3500,4000),"60M":(5250,5450),
+                    "40M":(7000,7300),"30M":(10100,10150),"20M":(14000,14350),
+                    "17M":(18068,18168),"15M":(21000,21450),"12M":(24890,24990),
+                    "10M":(28000,29700),"6M":(50000,54000),"2M":(144000,148000),
+                    "70CM":(420000,450000),"23CM":(1240000,1300000)}
 
     def __init__(self, parent, app_ref):
         super().__init__(parent)
         self.title(T("dxc_titolo"))
         self.geometry("980x620")
         self.minsize(760, 420)
+        self.resizable(True, True)
+        self.configure(fg_color="#000000")   # sfondo scuro pulito, coerente col tree
         self.app_ref = app_ref
         # Porta in primo piano (evita che finisca dietro la finestra principale)
         self.transient(parent)
@@ -71,14 +76,24 @@ class DXClusterWindow(ctk.CTkToplevel):
         self._thread = None
         self._running = False
         self._spot_queue = []
+        self._announce_queue = []
+        self._ticker_full = ""
+        self._bandmap = {}
+        self._bm_items = {}
+        self._bandmap_window = 3600  # spot a tempo: 60 minuti
         self._paused = False
         self._dxcc_nel_log = set()
+        self._entita_log = {}
         self._evidenzia_nuovi = ctk.BooleanVar(value=False)
+        self._evidenzia_slot = ctk.BooleanVar(value=True)
         self._filtri_banda = {}
         self._filtro_modo = ctk.StringVar(value="Tutti")
         self._filtro_call = ctk.StringVar(value="")
+        self._watch_input = ctk.StringVar(value="")
+        self._n_last_spot = ctk.StringVar(value="10")
         # Auto-riconnessione
         self._auto_riconnetti = ctk.BooleanVar(value=True)
+        self._autostart = ctk.BooleanVar(value=False)
         self._disconnessione_voluta = False
         self._reconnect_after = None
         self._tentativi_reconnect = 0
@@ -99,6 +114,12 @@ class DXClusterWindow(ctk.CTkToplevel):
         self._carica_opzioni()
         self._tutti_server = {**self.SERVERS, **self._server_custom}
         self.var_server = ctk.StringVar(value=list(self._tutti_server.keys())[0])
+        try:
+            _srv = getattr(self, '_opz_salvate', {}).get('server')
+            if _srv in self._tutti_server:
+                self.var_server.set(_srv)
+        except Exception:
+            pass
         self.opt_server = ctk.CTkOptionMenu(top, variable=self.var_server,
                           values=list(self._tutti_server.keys()),
                           width=210, height=28,
@@ -133,17 +154,50 @@ class DXClusterWindow(ctk.CTkToplevel):
                       command=self._pulisci,
                       fg_color="#4A5568", font=ctk.CTkFont(size=11)).pack(side="right", padx=4)
 
+        filt = ctk.CTkFrame(self, fg_color="transparent")
+        filt.pack(fill="x", padx=10, pady=(0, 2))
+        ctk.CTkLabel(filt, text=T("dxc_ultimi"), font=ctk.CTkFont(size=11)).pack(side="left")
+        ctk.CTkOptionMenu(filt, variable=self._n_last_spot,
+                          values=["5", "10", "20", "30", "50"], width=70, height=26,
+                          font=ctk.CTkFont(size=11)).pack(side="left", padx=(4, 12))
+        ctk.CTkLabel(filt, text=T("dxc_monitor_call"), font=ctk.CTkFont(size=11)).pack(side="left")
+        e_watch = ctk.CTkEntry(filt, textvariable=self._watch_input, width=120, height=26,
+                               placeholder_text="es. RI1*", font=ctk.CTkFont(size=11))
+        e_watch.pack(side="left", padx=(4, 2))
+        e_watch.bind("<Return>", lambda ev: self._add_watch())
+        ctk.CTkButton(filt, text="+", width=30, height=26, command=self._add_watch,
+                      fg_color="#2F855A", hover_color="#276749",
+                      font=ctk.CTkFont(size=13, weight="bold")).pack(side="left", padx=1)
+        ctk.CTkButton(filt, text=T("dxc_reset"), width=64, height=26, command=self._reset_watch,
+                      fg_color="#718096", hover_color="#4A5568",
+                      font=ctk.CTkFont(size=11)).pack(side="left", padx=(1, 8))
+        ctk.CTkButton(filt, text=T("dxc_aggiorna"), width=90, height=26,
+                      command=self._richiedi_ultimi_spot, fg_color="#2B6CB0",
+                      hover_color="#1A4480", font=ctk.CTkFont(size=11)).pack(side="left")
+        ctk.CTkButton(filt, text=T("dxc_bm_apri2"), width=120, height=26,
+                      command=self.apri_bandmap_finestra, fg_color="#6b46c1",
+                      hover_color="#553c9a", font=ctk.CTkFont(size=11)).pack(side="left", padx=(8, 0))
+
+        # Barra "bande attive" (box colorati) + ticker annunci, sempre visibili
+        self._box_bande = ctk.CTkFrame(self, fg_color="transparent")
+        self._box_bande.pack(fill="x", padx=10, pady=(0, 2))
+        self._box_watch = ctk.CTkFrame(self, fg_color="transparent")
+        self._box_watch.pack(fill="x", padx=10, pady=(0, 2))
+        tick_row = ctk.CTkFrame(self, fg_color="#0a0a0a", corner_radius=4)
+        tick_row.pack(fill="x", padx=10, pady=(0, 4))
+        ctk.CTkLabel(tick_row, text=T("dxc_annunci"),
+                     font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color="#F6AD55", width=72).pack(side="left", padx=(8, 4), pady=2)
+        self._ticker_lbl = ctk.CTkLabel(tick_row, text=T("dxc_annunci_ph"), anchor="w",
+                                        font=ctk.CTkFont(size=11), text_color="#CBD5E0")
+        self._ticker_lbl.pack(side="left", fill="x", expand=True, pady=2)
+
         import tkinter.ttk as _ttk
         frame_tree = ctk.CTkFrame(self)
         frame_tree.pack(fill="both", expand=True, padx=10, pady=4)
 
-        style = _ttk.Style()
-        style.theme_use("default")
-        style.configure("DXC.Treeview", background="#101825", foreground="#E2E8F0",
-                        rowheight=22, fieldbackground="#101825", font=("Consolas", 10))
-        style.configure("DXC.Treeview.Heading", background="#1A365D",
-                        foreground="white", font=("Arial", 10, "bold"), relief="flat")
-        style.map("DXC.Treeview", background=[("selected","#2B6CB0")])
+        self._ttk_style = _ttk.Style()
+        self._applica_tema()   # applica lo stile del tree (senza toccare il tema globale)
 
         cols = ("utc","dx","freq","banda","modo","spotter","commento")
         self.tree = _ttk.Treeview(frame_tree, columns=cols, show="headings",
@@ -162,7 +216,7 @@ class DXClusterWindow(ctk.CTkToplevel):
         self.tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
 
-        colori_banda = {
+        self._colori_banda = colori_banda = {
             "160M":"#9F7AEA","80M":"#B794F4","60M":"#805AD5","40M":"#4299E1",
             "30M":"#63B3ED","20M":"#48BB78","17M":"#68D391","15M":"#F6AD55",
             "12M":"#ED8936","10M":"#FC8181","6M":"#F56565","2M":"#E53E3E",
@@ -171,6 +225,10 @@ class DXClusterWindow(ctk.CTkToplevel):
         for banda, col in colori_banda.items():
             self.tree.tag_configure(f"b_{banda}", foreground=col)
         self.tree.tag_configure("nuovo_dxcc", background="#2D3A1F", foreground="#9AE6B4")
+        self.tree.tag_configure("nuovo_slot", background="#3A2E12", foreground="#F6C177")
+        self._aggiorna_box_bande()
+        self._aggiorna_watch_chips()
+        self.after(250, self._ticker_tick)
 
         self.tree.bind("<Button-3>", self._menu_contestuale)
         self.tree.bind("<Double-1>", lambda e: self._aggiungi_qso_da_spot())
@@ -194,6 +252,10 @@ class DXClusterWindow(ctk.CTkToplevel):
         self._carica_dxcc_log()
         self.protocol("WM_DELETE_WINDOW", self._chiudi)
         self.after(400, self._processa_coda)
+        self.after(2000, self._bandmap_tick)
+        # Autostart: se attivo, connetti automaticamente al server configurato
+        if self._autostart.get():
+            self.after(700, self._connetti)
 
     def _carica_server_custom(self):
         """Carica i server DX cluster personalizzati dal profilo."""
@@ -228,11 +290,14 @@ class DXClusterWindow(ctk.CTkToplevel):
             opz = dati.get('dxc_opzioni', {})
             if not isinstance(opz, dict):
                 return
+            self._opz_salvate = opz
             mappa = {
                 'evidenzia_nuovi': self._evidenzia_nuovi,
+                'evidenzia_slot':  self._evidenzia_slot,
                 'notifica_dxcc':   self._notifica_dxcc,
                 'suono_dxcc':      self._suono_dxcc,
                 'auto_riconnetti': self._auto_riconnetti,
+                'autostart':       self._autostart,
                 'qsy_dblclick':    self._qsy_al_doppioclick,
                 'dig_come_usbd':   self._dig_come_usbd,
                 'usa_bandplan':    self._usa_bandplan,
@@ -248,6 +313,9 @@ class DXClusterWindow(ctk.CTkToplevel):
             if 'filtro_call' in opz:
                 try: self._filtro_call.set(str(opz['filtro_call']))
                 except Exception: pass
+            if 'n_last_spot' in opz:
+                try: self._n_last_spot.set(str(opz['n_last_spot']))
+                except Exception: pass
             # Filtri banda: ricrea le BooleanVar per le bande salvate
             bande_on = opz.get('filtri_banda', [])
             if isinstance(bande_on, list):
@@ -255,6 +323,9 @@ class DXClusterWindow(ctk.CTkToplevel):
                     self._filtri_banda[banda] = ctk.BooleanVar(value=True)
         except Exception:
             pass
+
+    def _rinfresca_bande(self):
+        self._aggiorna_box_bande()
 
     def _salva_opzioni(self):
         """Salva le opzioni del DX Cluster nel profilo attivo."""
@@ -264,9 +335,11 @@ class DXClusterWindow(ctk.CTkToplevel):
             if nome_prof and nome_prof in profili:
                 profili[nome_prof]['dxc_opzioni'] = {
                     'evidenzia_nuovi': bool(self._evidenzia_nuovi.get()),
+                    'evidenzia_slot':  bool(self._evidenzia_slot.get()),
                     'notifica_dxcc':   bool(self._notifica_dxcc.get()),
                     'suono_dxcc':      bool(self._suono_dxcc.get()),
                     'auto_riconnetti': bool(self._auto_riconnetti.get()),
+                    'autostart':       bool(self._autostart.get()),
                     'qsy_dblclick':    bool(self._qsy_al_doppioclick.get()),
                     'dig_come_usbd':   bool(self._dig_come_usbd.get()),
                     'usa_bandplan':    bool(self._usa_bandplan.get()),
@@ -274,9 +347,15 @@ class DXClusterWindow(ctk.CTkToplevel):
                     'filtro_call':     self._filtro_call.get(),
                     'filtri_banda':    [b for b, v in self._filtri_banda.items()
                                         if v.get()],
+                    'n_last_spot':     self._n_last_spot.get(),
+                    'server':          self.var_server.get(),
                 }
                 with open(self.app_ref.profili_path, 'w', encoding='utf-8') as f:
                     json.dump(profili, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+        try:
+            self._aggiorna_box_bande()
         except Exception:
             pass
 
@@ -340,6 +419,28 @@ class DXClusterWindow(ctk.CTkToplevel):
         ctk.CTkButton(fr, text=T("dxc_annulla"), command=dlg.destroy,
                       height=34, width=90, fg_color="#718096").pack(side="left")
 
+    def _cmd_ultimi(self):
+        """Comando per gli ultimi spot: SH/DX N [prefisso] (dal selettore e dal
+        filtro callsign, ripulito dei caratteri jolly)."""
+        try:
+            n = int(self._n_last_spot.get())
+        except Exception:
+            n = 10
+        n = max(1, min(n, 99))
+        pats = [x.strip() for x in self._filtro_call.get().split(",") if x.strip()]
+        pref = ""
+        if len(pats) == 1:
+            pref = pats[0].upper().replace("*", "").replace("?", "")
+        return f"SH/DX {n}" + (f" {pref}" if pref else "")
+
+    def _richiedi_ultimi_spot(self):
+        """Richiede subito gli ultimi spot (bottone Aggiorna), se connessi."""
+        try:
+            if getattr(self, "_sock", None) and getattr(self, "_running", False):
+                self._sock.sendall((self._cmd_ultimi() + "\r\n").encode())
+        except Exception:
+            pass
+
     def _toggle_connessione(self):
         if self._running:
             self._disconnetti()
@@ -379,9 +480,19 @@ class DXClusterWindow(ctk.CTkToplevel):
                                T("dxc_disconnetti"), "#9C4221", "#7B3618")
                 buf = b""
                 login_inviato = False
+                spot_iniziali_inviati = False
+                t_login = None
                 import time as _time
                 t_conn = _time.time()
                 while self._running:
+                    # Dopo il login, chiedi UNA volta gli ultimi 10 spot già passati
+                    if (login_inviato and not spot_iniziali_inviati and t_login
+                            and (_time.time() - t_login) > 1.5):
+                        try:
+                            self._sock.sendall((self._cmd_ultimi() + "\r\n").encode())
+                        except OSError:
+                            pass
+                        spot_iniziali_inviati = True
                     try:
                         data = self._sock.recv(4096)
                         if not data:
@@ -392,7 +503,7 @@ class DXClusterWindow(ctk.CTkToplevel):
                         if not login_inviato and (_time.time() - t_conn) > 3:
                             try:
                                 self._sock.sendall((mycall + "\r\n").encode())
-                                login_inviato = True
+                                login_inviato = True; t_login = _time.time()
                             except OSError:
                                 break
                         continue
@@ -410,7 +521,7 @@ class DXClusterWindow(ctk.CTkToplevel):
                                 'your call', 'enter your')):
                             try:
                                 self._sock.sendall((mycall + "\r\n").encode())
-                                login_inviato = True
+                                login_inviato = True; t_login = _time.time()
                             except OSError:
                                 break
 
@@ -425,7 +536,7 @@ class DXClusterWindow(ctk.CTkToplevel):
                                    ('login', 'callsign', 'enter your call', 'your call')):
                                 try:
                                     self._sock.sendall((mycall + "\r\n").encode())
-                                    login_inviato = True
+                                    login_inviato = True; t_login = _time.time()
                                 except OSError:
                                     break
                                 continue
@@ -515,11 +626,19 @@ class DXClusterWindow(ctk.CTkToplevel):
             pass
 
     def _chiudi(self):
+        try:
+            self._salva_opzioni()
+        except Exception:
+            pass
         self._disconnetti()
         self.destroy()
 
     def _parse_riga(self, riga):
         if 'DX de' not in riga:
+            if self._e_annuncio(riga):
+                self._announce_queue.append(self._pulisci_annuncio(riga))
+            else:
+                self._parse_tabella(riga)
             return
         # Isola la parte dopo "DX de"
         idx = riga.find('DX de')
@@ -562,6 +681,33 @@ class DXClusterWindow(ctk.CTkToplevel):
             'commento': commento.strip(),
         })
 
+    def _parse_tabella(self, riga):
+        """Spot in formato tabella (risposta a SH/DX: spot già passati), es.
+        14074.0  JA1XYZ  2-Sep-2026 1615Z  FT8 ...  <EA1ABC>"""
+        m = re.match(r'^\s*([\d.]+)\s+([\w/\-]+)\s+\d{1,2}-[A-Za-z]{3}-\d{2,4}\s+(\d{4})Z?\s+(.*)$', riga)
+        if not m:
+            return
+        freq, dxcall, utc, resto = m.groups()
+        try:
+            f_khz = float(freq)
+        except ValueError:
+            return
+        spotter = ""
+        ms = re.search(r'<([\w/\-]+)>\s*$', resto)
+        if ms:
+            spotter = ms.group(1)
+            commento = resto[:ms.start()].strip()
+        else:
+            commento = resto.strip()
+        banda = self._freq_to_banda(f_khz)
+        modo = self._deduci_modo(f_khz, commento)
+        self._spot_queue.append({
+            'utc': f"{utc[:2]}:{utc[2:]}",
+            'dx': dxcall.upper(),
+            'freq': freq, 'banda': banda, 'modo': modo,
+            'spotter': spotter.upper(), 'commento': commento.strip(),
+        })
+
     @staticmethod
     def _freq_to_banda(khz):
         tab = [(1800,2000,"160M"),(3500,4000,"80M"),(5250,5450,"60M"),
@@ -594,7 +740,204 @@ class DXClusterWindow(ctk.CTkToplevel):
                     self._mostra_spot(self._spot_queue.pop(0))
                 except Exception:
                     break
+        while self._announce_queue:
+            try:
+                msg = self._announce_queue.pop(0)
+                self._ticker_full = (self._ticker_full + "     •     " + msg)[-600:]
+            except Exception:
+                break
         self.after(400, self._processa_coda)
+
+    _COLORI_MODO = {"SSB": "#F6AD55", "CW": "#4299E1", "FT8": "#48BB78",
+                    "FT4": "#68D391", "RTTY": "#9F7AEA", "PSK": "#B794F4",
+                    "FM": "#ED8936", "AM": "#FBB6CE"}
+
+    def _applica_tema(self):
+        """(Ri)applica lo stile del treeview del cluster. Va chiamato all'avvio e
+        dopo un cambio tema globale dell'app, così il cluster non resta con lo
+        stile ttk alterato (che prima lo faceva sembrare 'chiuso')."""
+        try:
+            self.configure(fg_color="#000000")
+        except Exception:
+            pass
+        try:
+            st = getattr(self, "_ttk_style", None)
+            if st is None:
+                import tkinter.ttk as _ttk
+                st = self._ttk_style = _ttk.Style()
+            st.configure("DXC.Treeview", background="#000000", foreground="#E2E8F0",
+                         rowheight=22, fieldbackground="#000000", font=("Consolas", 10))
+            st.configure("DXC.Treeview.Heading", background="#1A365D",
+                         foreground="white", font=("Arial", 10, "bold"), relief="flat")
+            st.map("DXC.Treeview", background=[("selected", "#2B6CB0")])
+        except Exception:
+            pass
+
+    def _watch_list(self):
+        return [x.strip().upper() for x in self._filtro_call.get().split(",") if x.strip()]
+
+    def _add_watch(self):
+        val = self._watch_input.get().strip().upper()
+        if not val:
+            return
+        lst = self._watch_list()
+        if val not in lst:
+            lst.append(val)
+        self._filtro_call.set(",".join(lst))
+        self._watch_input.set("")
+        self._aggiorna_watch_chips()
+
+    def _del_watch(self, pat):
+        lst = [x for x in self._watch_list() if x != pat.upper()]
+        self._filtro_call.set(",".join(lst))
+        self._aggiorna_watch_chips()
+
+    def _reset_watch(self):
+        self._filtro_call.set("")
+        self._aggiorna_watch_chips()
+
+    def _aggiorna_watch_chips(self):
+        try:
+            for w in self._box_watch.winfo_children():
+                w.destroy()
+            ctk.CTkLabel(self._box_watch, text=T("dxc_monitor_lbl"),
+                         font=ctk.CTkFont(size=11), text_color="gray").pack(side="left", padx=(0, 4))
+            pats = self._watch_list()
+            if not pats:
+                ctk.CTkLabel(self._box_watch, text=T("dxc_monitor_vuoto"),
+                             font=ctk.CTkFont(size=10, weight="bold"),
+                             fg_color="#2D3748", text_color="#8794a3",
+                             corner_radius=6, width=80, height=20).pack(side="left", padx=2)
+                return
+            for p in pats:
+                lb = ctk.CTkLabel(self._box_watch, text=f"{p}  \u2715",
+                                  font=ctk.CTkFont(size=10, weight="bold"),
+                                  fg_color="#2B6CB0", text_color="#EAF2FB",
+                                  corner_radius=6, height=20)
+                lb.pack(side="left", padx=2)
+                lb.configure(cursor="hand2")
+                lb.bind("<Button-1>", lambda e, pp=p: self._del_watch(pp))
+        except Exception:
+            pass
+
+    def _aggiorna_box_bande(self):
+        """Barra filtri cliccabile: ogni banda è un box (acceso=attivo, spento=
+        filtrato); clic per accendere/spegnere. Il box modo cicla i modi."""
+        try:
+            for w in self._box_bande.winfo_children():
+                w.destroy()
+
+            def _chip(testo, col, tx, w, cmd=None):
+                lb = ctk.CTkLabel(self._box_bande, text=testo,
+                                  font=ctk.CTkFont(size=10, weight="bold"),
+                                  fg_color=col, text_color=tx,
+                                  corner_radius=6, width=w, height=20)
+                lb.pack(side="left", padx=2)
+                if cmd:
+                    lb.configure(cursor="hand2")
+                    lb.bind("<Button-1>", lambda e: cmd())
+                return lb
+
+            attive = [b for b, v in self._filtri_banda.items() if v.get()] if self._filtri_banda else []
+
+            # --- Bande: TUTTE le bande, accese/spente, cliccabili ---
+            ctk.CTkLabel(self._box_bande, text=T("dxc_bande_attive"),
+                         font=ctk.CTkFont(size=11), text_color="gray").pack(side="left", padx=(0, 4))
+            for b in self._BANDE_FILTRO:
+                on = (b in attive) if attive else True
+                if on:
+                    _chip(b, self._colori_banda.get(b, "#4A5568"), "#0A0F16", 40,
+                          cmd=lambda bb=b: self._toggle_banda(bb))
+                else:
+                    _chip(b, "#232B34", "#5A6672", 40,
+                          cmd=lambda bb=b: self._toggle_banda(bb))
+
+            ctk.CTkLabel(self._box_bande, text="  ").pack(side="left")
+
+            # --- Modo: box cliccabile che cicla i modi ---
+            ctk.CTkLabel(self._box_bande, text=T("dxc_modi_attivi"),
+                         font=ctk.CTkFont(size=11), text_color="gray").pack(side="left", padx=(6, 4))
+            fm = self._filtro_modo.get()
+            if fm in ("Tutti", T("dxc_tutti")):
+                _chip(T("dxc_tutti_modi"), "#2D3748", "#E2E8F0", 92, cmd=self._cicla_modo)
+            else:
+                _chip(fm, self._COLORI_MODO.get(fm.upper(), "#4A5568"), "#0A0F16", 54,
+                      cmd=self._cicla_modo)
+        except Exception:
+            pass
+
+    def _toggle_banda(self, b):
+        """Accende/spegne una banda dalla barra. Popola tutte le bande la prima
+        volta, così il filtro diventa esplicito e sincronizzato con le Opzioni."""
+        try:
+            if not self._filtri_banda:
+                for bb in self._BANDE_FILTRO:
+                    self._filtri_banda[bb] = ctk.BooleanVar(value=True)
+            v = self._filtri_banda.get(b)
+            if v is None:
+                v = ctk.BooleanVar(value=True)
+                self._filtri_banda[b] = v
+            v.set(not v.get())
+            self._aggiorna_box_bande()
+        except Exception:
+            pass
+
+    def _cicla_modo(self):
+        """Cicla il filtro modo: Tutti -> FT8 -> FT4 -> CW -> SSB -> RTTY -> PSK."""
+        try:
+            modi = ["Tutti", "FT8", "FT4", "CW", "SSB", "RTTY", "PSK"]
+            cur = self._filtro_modo.get()
+            if cur in ("Tutti", T("dxc_tutti")):
+                cur = "Tutti"
+            i = modi.index(cur) if cur in modi else 0
+            self._filtro_modo.set(modi[(i + 1) % len(modi)])
+            self._aggiorna_box_bande()
+        except Exception:
+            pass
+
+    def _ticker_tick(self):
+        try:
+            if self._ticker_full and len(self._ticker_full) > 90:
+                self._ticker_full = self._ticker_full[1:] + self._ticker_full[0]
+                self._ticker_lbl.configure(text=self._ticker_full[:170], text_color="#F6AD55")
+            elif self._ticker_full:
+                self._ticker_lbl.configure(text=self._ticker_full, text_color="#F6AD55")
+            else:
+                self._ticker_lbl.configure(text=T("dxc_annunci_ph"), text_color="#5A6672")
+        except Exception:
+            pass
+        try:
+            self.after(200, self._ticker_tick)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _e_annuncio(riga):
+        r = (riga or "").strip()
+        if len(r) < 5:
+            return False
+        up = r.upper()
+        if up.startswith(("WWV DE", "WCY DE", "WX DE", "WWV ", "WCY ")):
+            return True
+        if "TO ALL" in up or "TO LOCAL" in up:
+            return True
+        if "SFI=" in up or " K=" in up or " A=" in up or "SUNSPOT" in up or "AURORA" in up:
+            return True
+        import re as _re
+        if _re.match(r'^(de\s+)?[\w/\-]+\s+de\s+[\w/\-]+\s*:', r, _re.IGNORECASE):
+            return True
+        if _re.match(r'^de\s+[\w/\-]+\s*:', r, _re.IGNORECASE):
+            return True
+        # "CALL: messaggio" (talk/announce), escludendo righe di sistema comuni
+        if _re.match(r'^[A-Z0-9/\-]{3,}\s*:\s+\S', up) and not up.startswith(
+                ("LOGIN", "CALLSIGN", "PASSWORD", "ERROR", "SPOT ", "USERS")):
+            return True
+        return False
+
+    @staticmethod
+    def _pulisci_annuncio(riga):
+        import re as _re
+        return _re.sub(r'\s+', ' ', (riga or '').strip())[:200]
 
     def _mostra_spot(self, spot):
         if self._filtri_banda:
@@ -610,15 +953,32 @@ class DXClusterWindow(ctk.CTkToplevel):
             return
 
         tags = [f"b_{spot['banda']}"]
-        if self._evidenzia_nuovi.get():
+        if self._evidenzia_nuovi.get() or self._evidenzia_slot.get():
             pfx = self._prefisso(spot['dx'])
-            if pfx and pfx not in self._dxcc_nel_log:
-                tags.append("nuovo_dxcc")
-                # Notifica (una volta per prefisso+banda per non ripetere)
-                chiave = f"{pfx}_{spot['banda']}"
-                if chiave not in self._dxcc_gia_notificati:
-                    self._dxcc_gia_notificati.add(chiave)
-                    self._notifica_dxcc_nuovo(spot, pfx)
+            if pfx:
+                if pfx not in self._dxcc_nel_log:
+                    if self._evidenzia_nuovi.get():
+                        tags.append("nuovo_dxcc")
+                        chiave = f"{pfx}_{spot['banda']}"
+                        if chiave not in self._dxcc_gia_notificati:
+                            self._dxcc_gia_notificati.add(chiave)
+                            self._notifica_dxcc_nuovo(spot, pfx)
+                elif self._evidenzia_slot.get():
+                    e = self._entita_log.get(pfx, {'bande': set(), 'modi': set()})
+                    nb = bool(spot['banda']) and spot['banda'] not in e['bande']
+                    nm = bool(spot['modo']) and spot['modo'] not in e['modi']
+                    if nb or nm:
+                        tags.append("nuovo_slot")
+
+        try:
+            _fk = float(spot['freq'])
+            _st = "dxcc" if "nuovo_dxcc" in tags else ("slot" if "nuovo_slot" in tags else "norm")
+            self._bandmap[f"{spot['dx']}|{spot['banda']}"] = {
+                'dx': spot['dx'], 'freq_khz': _fk, 'banda': spot['banda'],
+                'modo': spot['modo'], 'utc': spot.get('utc', ''),
+                'ts': time.time(), 'status': _st}
+        except Exception:
+            pass
 
         self.tree.insert("", 0, values=(
             spot['utc'], spot['dx'], spot['freq'], spot['banda'],
@@ -745,11 +1105,21 @@ class DXClusterWindow(ctk.CTkToplevel):
     def _carica_dxcc_log(self):
         self._dxcc_nel_log.clear()
         self._dxcc_gia_notificati.clear()
+        self._entita_log = {}
         try:
             for q in self.app_ref.qsos_caricati:
                 c = str(q.get('call','')).upper()
-                if c:
-                    self._dxcc_nel_log.add(self._prefisso(c))
+                if not c:
+                    continue
+                pfx = self._prefisso(c)
+                self._dxcc_nel_log.add(pfx)
+                e = self._entita_log.setdefault(pfx, {'bande': set(), 'modi': set()})
+                b = str(q.get('band', '')).lower().strip()
+                m = str(q.get('mode', '')).upper().strip()
+                if b:
+                    e['bande'].add(b)
+                if m:
+                    e['modi'].add(m)
         except Exception:
             pass
 
@@ -880,6 +1250,7 @@ class DXClusterWindow(ctk.CTkToplevel):
             v = self._filtri_banda.get(banda) or ctk.BooleanVar(value=False)
             self._filtri_banda[banda] = v
             ctk.CTkCheckBox(frame_b, text=banda, variable=v,
+                            command=self._aggiorna_box_bande,
                             font=ctk.CTkFont(size=11), width=70
                             ).grid(row=i//3, column=i%3, sticky="w", padx=4, pady=2)
 
@@ -887,6 +1258,7 @@ class DXClusterWindow(ctk.CTkToplevel):
                      font=ctk.CTkFont(size=12, weight="bold")).pack(pady=(14,4))
         ctk.CTkOptionMenu(cont, variable=self._filtro_modo,
                           values=[T("dxc_tutti"),"FT8","FT4","CW","SSB","RTTY","PSK"],
+                          command=lambda _v: self._aggiorna_box_bande(),
                           width=160).pack()
 
         ctk.CTkLabel(cont, text=T("dxc_filtro_call"),
@@ -902,6 +1274,10 @@ class DXClusterWindow(ctk.CTkToplevel):
                         variable=self._evidenzia_nuovi,
                         font=ctk.CTkFont(size=11),
                         command=self._carica_dxcc_log).pack(pady=(16,4))
+        ctk.CTkCheckBox(cont, text=T("dxc_evidenzia_slot"),
+                        variable=self._evidenzia_slot,
+                        font=ctk.CTkFont(size=11),
+                        command=self._carica_dxcc_log).pack(pady=(2,4))
 
         # Sezione notifiche DXCC nuovo
         ctk.CTkCheckBox(cont, text=T("dxc_notifica_dxcc"),
@@ -914,6 +1290,9 @@ class DXClusterWindow(ctk.CTkToplevel):
         ctk.CTkCheckBox(cont, text=T("dxc_auto_riconn"),
                         variable=self._auto_riconnetti,
                         font=ctk.CTkFont(size=11)).pack(pady=(8,4))
+        ctk.CTkCheckBox(cont, text=T("dxc_autostart"),
+                        variable=self._autostart,
+                        font=ctk.CTkFont(size=11)).pack(pady=(2,4))
         # QSY radio al doppio click
         ctk.CTkCheckBox(cont, text=T("dxc_qsy_dblclick"),
                         variable=self._qsy_al_doppioclick,
@@ -1013,6 +1392,175 @@ class DXClusterWindow(ctk.CTkToplevel):
                       height=30, fg_color="#4A5568").pack(pady=(0,4))
         ctk.CTkButton(dlg, text=T("dxc_chiudi"), command=dlg.destroy,
                       height=30, fg_color="#718096").pack(pady=(0,12))
+
+    def _on_tab_change(self):
+        try:
+            if self._tabs.get() == T("dxc_tab_bandmap"):
+                self._bandmap_draw()
+        except Exception:
+            pass
+
+    def _bandmap_tick(self):
+        try:
+            w = getattr(self, "_bmw", None)
+            if w is not None and w.winfo_exists():
+                self._bandmap_draw_into(self._bmw_canvas, "_bmw_items", 168)
+        except Exception:
+            pass
+        try:
+            self.after(20000, self._bandmap_tick)
+        except Exception:
+            pass
+
+    def _bandmap_bande(self):
+        attive = [b for b, v in self._filtri_banda.items() if v.get()] if self._filtri_banda else []
+        base = attive if attive else list(self._BANDE_FILTRO)
+        return [b for b in self._BANDE_FILTRO if b in base and b in self._BAND_RANGES]
+
+    def _bandmap_draw(self):
+        self._bandmap_draw_into(getattr(self, "_bm_canvas", None), "_bm_items", 104)
+
+    def _bandmap_draw_into(self, c, items_attr, col_w):
+        if c is None:
+            return
+        try:
+            now = time.time()
+            self._bandmap = {k: sp for k, sp in self._bandmap.items()
+                             if now - sp['ts'] <= self._bandmap_window}
+            c.delete("all")
+            items = {}
+            setattr(self, items_attr, items)
+            bande = self._bandmap_bande()
+            if not bande:
+                c.create_text(12, 20, anchor="w", text=T("dxc_bm_vuota"),
+                              fill="#6b7787", font=("Arial", 11))
+                return
+            large = col_w >= 140
+            fs = 10 if large else 8
+            hh = 10 if large else 8
+            top = 34
+            h = max(int(c.winfo_height()), 320)
+            plot_h = h - top - 14
+            fresh = self._bandmap_window
+            for i, b in enumerate(bande):
+                x0 = i * col_w + 6
+                xc = x0 + (col_w - 8) // 2
+                col = self._colori_banda.get(b, "#4A5568")
+                c.create_rectangle(x0, 6, x0 + col_w - 8, 26, fill=col, outline="")
+                c.create_text(xc, 16, text=b, fill="#0A0F16",
+                              font=("Arial", 11 if large else 10, "bold"))
+                c.create_line(xc, top, xc, top + plot_h, fill="#141b24")
+                lo, hi = self._BAND_RANGES[b]
+                span = float(hi - lo) or 1.0
+                # scala frequenze (in evidenza)
+                nt = 6
+                for t in range(nt + 1):
+                    ff = lo + (hi - lo) * t / nt
+                    yy = top + plot_h - int((ff - lo) / span * plot_h)
+                    c.create_line(x0, yy, x0 + col_w - 8, yy, fill="#0f1a24")
+                    c.create_text(x0 + 2, yy - 6, anchor="w",
+                                  text=f"{ff/1000:.3f}", fill="#7f8b99",
+                                  font=("Consolas", 8 if large else 7))
+                spots = sorted([sp for sp in self._bandmap.values() if sp['banda'] == b],
+                               key=lambda sp: sp['freq_khz'])
+                for sp in spots:
+                    frac = min(max((sp['freq_khz'] - lo) / span, 0.0), 1.0)
+                    y = top + plot_h - int(frac * plot_h)
+                    if sp['status'] == 'dxcc':
+                        fill, tx = "#2e9e5b", "#0A0F16"
+                    elif sp['status'] == 'slot':
+                        fill, tx = "#d9a441", "#0A0F16"
+                    else:
+                        fill, tx = "#243141", "#C7D2DE"
+                    if now - sp['ts'] > fresh * 0.66:
+                        fill, tx = "#141b24", "#6b7787"
+                    it = c.create_rectangle(x0, y - hh, x0 + col_w - 8, y + hh,
+                                            fill=fill, outline="#000000")
+                    tt = c.create_text(x0 + 4, y, anchor="w",
+                                       text=f"{sp['dx']} {sp['freq_khz']:.0f}",
+                                       fill=tx, font=("Consolas", fs))
+                    items[it] = sp
+                    items[tt] = sp
+            c.configure(scrollregion=(0, 0, len(bande) * col_w + 12, h))
+        except Exception:
+            pass
+
+    def _bm_click(self, event):
+        self._bm_click_su(getattr(self, "_bm_canvas", None), self._bm_items, event)
+
+    def _bmw_click(self, event):
+        self._bm_click_su(getattr(self, "_bmw_canvas", None), getattr(self, "_bmw_items", {}), event)
+
+    def _bm_click_su(self, c, items, event):
+        try:
+            if c is None:
+                return
+            it = c.find_closest(c.canvasx(event.x), c.canvasy(event.y))
+            sp = items.get(it[0]) if it else None
+            if sp:
+                self._bandmap_apri(sp)
+        except Exception:
+            pass
+
+    def apri_bandmap_finestra(self):
+        try:
+            w = getattr(self, "_bmw", None)
+            if w is not None and w.winfo_exists():
+                w.lift(); w.focus_force(); return
+        except Exception:
+            pass
+        w = ctk.CTkToplevel(self)
+        self._bmw = w
+        w.title(T("dxc_bm_titolo"))
+        w.geometry("1100x720")
+        w.configure(fg_color="#000000")
+        w.transient(self); w.lift()
+        wrap = ctk.CTkFrame(w, fg_color="transparent")
+        wrap.pack(fill="both", expand=True, padx=6, pady=6)
+        self._bmw_canvas = tk.Canvas(wrap, bg="#000000", highlightthickness=0)
+        hsb = _ttk.Scrollbar(wrap, orient="horizontal", command=self._bmw_canvas.xview)
+        self._bmw_canvas.configure(xscrollcommand=hsb.set)
+        hsb.pack(side="bottom", fill="x")
+        self._bmw_canvas.pack(side="top", fill="both", expand=True)
+        self._bmw_items = {}
+        self._bmw_canvas.bind("<Button-1>", self._bmw_click)
+        self._bmw_canvas.bind("<Configure>",
+                              lambda e: self._bandmap_draw_into(self._bmw_canvas, "_bmw_items", 168))
+        self.after(120, lambda: self._bandmap_draw_into(self._bmw_canvas, "_bmw_items", 168))
+
+    def _qsy_v(self, freq_khz, modo, call, freq_txt):
+        rig = getattr(self.app_ref, "_omnirig", None)
+        if rig is None or not rig.disponibile():
+            messagebox.showwarning(T("dxc_omnirig_no"), T("dxc_omnirig_assente"), parent=self)
+            return
+        try:
+            hz = int(round(float(freq_khz) * 1000))
+            ok = rig.qsy(hz, modo, dig_come_usbd=self._dig_come_usbd.get(),
+                         usa_bandplan=self._usa_bandplan.get())
+            if ok:
+                self.lbl_stato.configure(text=T("dxc_qsy_fatto", call=call, freq=freq_txt),
+                                         text_color="#48BB78")
+            else:
+                messagebox.showwarning(T("dxc_omnirig_no"), T("dxc_qsy_errore"), parent=self)
+        except Exception as ex:
+            messagebox.showerror(T("dxc_errore"), str(ex), parent=self)
+
+    def _bandmap_apri(self, sp):
+        v = (sp.get('utc', ''), sp['dx'], f"{sp['freq_khz']:.1f}", sp['banda'], sp['modo'], '', '')
+        if self._qsy_al_doppioclick.get():
+            try:
+                self._qsy_v(sp['freq_khz'], sp['modo'], sp['dx'], f"{sp['freq_khz']:.1f}")
+            except Exception:
+                pass
+        try:
+            dlg = getattr(self.app_ref, '_aggiungi_qso_dlg', None)
+            if dlg is not None and dlg.winfo_exists():
+                self._precompila(v); dlg.lift(); dlg.focus_force()
+            else:
+                self.app_ref.apri_aggiungi_qso()
+                self.after(300, lambda: self._precompila(v))
+        except Exception as ex:
+            messagebox.showerror(T("dxc_errore"), str(ex), parent=self)
 
     def _qsy_da_spot(self):
         """Porta la radio (via OmniRig) sulla frequenza/modo della spot selezionata."""

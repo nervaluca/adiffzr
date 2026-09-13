@@ -2,9 +2,6 @@ import os
 import sys
 
 _this_dir = os.path.dirname(os.path.abspath(__file__))
-_target_pkg = r'C:\Users\nerva\Desktop\printlog\innosetup3.2\ADIF_FZR_Modular'
-if _target_pkg not in sys.path:
-    sys.path.insert(0, _target_pkg)
 if _this_dir not in sys.path:
     sys.path.insert(0, _this_dir)
 
@@ -14,6 +11,8 @@ import re
 import csv
 import json
 import openpyxl
+from net.hamqth import HamQTHClient
+from openpyxl.styles import Font, Side, Border, Alignment, PatternFill
 import time
 import math
 from datetime import datetime, timedelta
@@ -38,10 +37,13 @@ except ImportError:
 
 from config import T, imposta_lingua, LINGUA, TRADUZIONI, MAPPA_CONTINENTI_DXCC, CONTINENTS_ORDER
 from config import VERSIONE, BUILD_DATE, APP_TITOLO, PROGRAMID_ADIF
+import urllib.request
+import urllib.parse
 from utils.dxcc import dxcc_da_nominativo
 from utils.maidenhead import locator_to_latlon, distanza_bearing, bearing_to_compass, estrai_locator_da_testo
 from utils.formatting import chiedi_cartella_output
 from utils.tooltip import _tip
+from utils.log_profili import percorso_profili, migra_profili, clona_profilo, cartella_dati
 from radio.omnirig import OmniRigControl
 from radio.sdrconsole import SDRConsoleControl
 from radio.bandplan import modo_da_bandplan
@@ -56,12 +58,14 @@ from gui.dialogs.preferences import ColoriDialog, ColoriHtmlDialog, OpzioniRegis
 from gui.dialogs.merge import UnisciDialog
 from gui.dialogs.dupe_check import DuplicatiDialog
 from gui.dialogs.charts import GraficiDialog
-from gui.dialogs.satellite import SatellitiDialog
+# NB: SatellitiDialog importato in modo pigro dentro apri_satelliti() per
+# evitare un errore "cannot import name" nel build PyInstaller (ordine di
+# inizializzazione dei moduli congelati diverso da CPython).
 from gui.dialogs.qsl_designer import QSLCardDesignerDialog, SelezioneQSODialog, QSLMasterDialog, QSLCardDialog
 from gui.dialogs.online_dialogs import (
     CloudlogUploadDialog, ClublogUploadDialog, LotwUploadDialog,
     EqslUploadDialog, QO100UploadDialog, HamQTHDialog,
-    LotwDownloadDialog, EqslDownloadDialog, EqslUnconfirmedDialog
+    LotwDownloadDialog, EqslDownloadDialog, EqslUnconfirmedDialog, AllineaLotwDialog
 )
 
 class ADIFtoPDFApp(ctk.CTk):
@@ -73,18 +77,34 @@ class ADIFtoPDFApp(ctk.CTk):
 
         self.minsize(1000, 750)
 
+        # Adatta lo scaling dei widget alla larghezza dello schermo: su monitor
+        # a bassa risoluzione la toolbar (tanti pulsanti) non ci sta e gli
+        # elementi a destra — label "nessun filtro" e "✕ Reset filtro" —
+        # finiscono oltre il bordo e spariscono. Rimpicciolendo un filo i
+        # widget, la toolbar rientra tutta. Sui monitor grandi resta invariato.
+        try:
+            _sw = self.winfo_screenwidth()
+            if _sw <= 1280:
+                ctk.set_widget_scaling(0.80)
+            elif _sw <= 1440:
+                ctk.set_widget_scaling(0.88)
+            elif _sw <= 1600:
+                ctk.set_widget_scaling(0.94)
+        except Exception:
+            pass
+
         self._imposta_icona()
         # Gestione chiusura pulita: chiede di salvare e chiude OmniRig se avviato
         self.protocol("WM_DELETE_WINDOW", self._chiudi_app)
 
-        # ── Splash screen ──────────────────────────
-        self.withdraw()  # nasconde la finestra principale durante il caricamento
-        splash = self._mostra_splash()
-
+        # (Splash disattivato: la finestra NON viene mai nascosta, così è
+        #  sempre visibile — nessun rischio di "processo attivo, schermo vuoto".)
         self.filepath = ""
         self.qsos_caricati = []
         self._undo_stack = []   # stack per Ctrl+Z nella finestra principale
         self.qsos_filtrati = []
+        self._ordine_inverso = False   # display: più recenti in alto
+        self._limite_vista = 0         # 0 = tutti i QSO; es. 500 = solo N righe
         self._log_modificato = False   # True se ci sono modifiche non salvate
 
         self.colori_pdf = {
@@ -129,7 +149,10 @@ class ADIFtoPDFApp(ctk.CTk):
         self._ultima_riga_toggle = None  # ultima riga marcata con Ctrl+Click (per range Shift+Click)
         self._checkbox_widgets = {}
         self.profilo_path   = os.path.join(os.path.expanduser("~"), ".adif_converter_profilo.json")
-        self.profili_path   = os.path.join(os.path.expanduser("~"), ".adif_fzr_profili.json")
+        # Profili nella cartella del programma (fallback %APPDATA%\ADIF_FZR se
+        # non scrivibile); migrazione una-tantum dal vecchio file in home.
+        self.profili_path   = percorso_profili()
+        migra_profili(self.profili_path)
         self.profilo_attivo = None
         self.storico_path   = os.path.join(os.path.expanduser("~"), ".adif_converter_storico.json")
         self.storico_files  = []
@@ -154,10 +177,28 @@ class ADIFtoPDFApp(ctk.CTk):
         self.carica_profilo()
         # Il tema è già stato applicato all'avvio da _tema_iniziale(); qui solo i colori
         self._aggiorna_colori_tree()
-        self.state('zoomed')
+        try:
+            self.state('zoomed')
+        except Exception:
+            pass
+        # Ri-massimizza a finestra realizzata: su alcuni PC lo 'zoomed' in
+        # __init__ non fa in tempo ad applicarsi. Deferito è affidabile ovunque.
+        self.after(60, self._massimizza)
+        self.after(250, self._massimizza)
+        self.after(150, self._controlla_primo_avvio)
 
-        # ── Chiude lo splash e mostra la finestra principale ──
-        self._chiudi_splash(splash)
+    def _massimizza(self):
+        try:
+            self.state('zoomed')
+            self.update_idletasks()
+            if str(self.state()) != 'zoomed':
+                w = self.winfo_screenwidth(); h = self.winfo_screenheight()
+                self.geometry(f"{w}x{h}+0+0")
+        except Exception:
+            try:
+                self.attributes('-zoomed', True)
+            except Exception:
+                pass
 
     def _trova_immagine_splash(self):
         """Cerca un file immagine splash nelle posizioni note. Restituisce il path o None."""
@@ -203,7 +244,7 @@ class ADIFtoPDFApp(ctk.CTk):
             try:
                 import ctypes
                 ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                    "IW1FZR.IW1FZR.ADIFFZR.Logbook.2.5")
+                    "IW1FZR.IW1FZR.ADIFFZR.Logbook.2.6")
             except Exception:
                 pass
 
@@ -337,7 +378,6 @@ class ADIFtoPDFApp(ctk.CTk):
         remaining = max(0, min_display_ms - elapsed_ms)
 
         def finish():
-            # Fade out
             def _fade_out(a=1.0):
                 a = max(a - 0.08, 0.0)
                 try: splash.attributes('-alpha', a)
@@ -354,8 +394,6 @@ class ADIFtoPDFApp(ctk.CTk):
                 self.state('zoomed')
                 self.lift()
                 self.focus_force()
-                # Riapplica l'icona ora che la finestra è visibile: è il momento
-                # in cui Windows ridisegna la taskbar.
                 if getattr(self, "_ico_path", None):
                     self.after(200, lambda: self._riapplica_icona(self._ico_path))
                 self.after(150, self._controlla_primo_avvio)
@@ -382,6 +420,7 @@ class ADIFtoPDFApp(ctk.CTk):
         self._tb1_refs = []
         self._tb2_refs = []
         self._sidebar_section_refs = []
+        self._nav_btn_refs = []
         self._sidebar_lang_refs = []
         # Controllo radio via OmniRig (lazy: si connette solo quando serve)
         self._omnirig_reale = OmniRigControl()   # istanza OmniRig persistente
@@ -416,7 +455,9 @@ class ADIFtoPDFApp(ctk.CTk):
         _FONT_TB    = ctk.CTkFont(size=12)
 
         self._tb_wrap = _WrapToolbar(self, fg_color=_TB_BG)
-        self._tb_wrap.pack(fill="x", side="top")
+        # Toolbar in alto rimossa dalla vista (navigazione ora nella sidebar):
+        # il frame resta creato per compatibilità ma non viene mostrato.
+        # self._tb_wrap.pack(fill="x", side="top")
         def _tbtn(text, cmd, tooltip=None,
                   fc=_BTN_NEU, hc=_BTN_NEU_HV,
                   tc=_TXT_NEU, lang_key=None, emoji="", key=None):
@@ -439,13 +480,15 @@ class ADIFtoPDFApp(ctk.CTk):
         # ── Definizioni disponibili riga 1 (per personalizzazione) ──
         self._tb1_disponibili = {
             "apri_adif":      ("📂 Apri",         self.sfoglia_file,    "Apri file ADIF  Ctrl+O",      _BTN_NEU, "📂 "),
+            "importa_adif":   ("📥 Importa ADIF", self.importa_adif_intelligente, "Importa/unisci ADIF nel log", _BTN_NEU, "📥 "),
+            "esporta_adif":   ("📤 Esporta ADIF", self.esporta_adif,    "Esporta il log su file ADIF (copia)", _BTN_NEU, "📤 "),
             "unisci":         ("🔗 Unisci",        self.apri_unisci,     "Unisci più file ADIF",        _BTN_NEU, "🔗 "),
-            "importa_cbr":    ("📥 Da CBR",        self.importa_cbr,     "Importa Cabrillo",            _BTN_NEU, "📥 "),
+            "importa_cbr":    ("🏁 Da CBR",        self.importa_cbr,     "Importa Cabrillo",            _BTN_NEU, "🏁 "),
             "salva_adif":     ("💾 Salva",         self.salva_adif,      "Salva ADIF  Ctrl+S",          _BTN_POS, "💾 "),
-            "aggiungi_qso":   ("➕ Aggiungi QSO",  self.apri_aggiungi_qso,"Inserisci QSO  Ctrl+N",      _BTN_POS, "➕ "),
+            "aggiungi_qso":   ("📻 Aggiungi QSO",  self.apri_aggiungi_qso,"Inserisci QSO  Ctrl+N",      _BTN_POS, "📻 "),
             "filtri_qso":     ("⚗ Filtri",        self.apri_filtri,     "Filtra QSO",                  _BTN_NEU, "⚗ "),
             "duplicati":      ("🔍 Dupe Check",    self.apri_duplicati,  "Dupe Check",                  _BTN_WRN, "🔍 "),
-            "deduci_country": ("🌍 Country",       self.deduci_country_da_nominativo, "Deduci Country dal prefisso", _BTN_NEU, "🌍 "),
+            "deduci_country": ("🌐 Country",       self.deduci_country_da_nominativo, "Deduci Country dal prefisso", _BTN_NEU, "🌐 "),
         }
         # ── Definizioni disponibili riga 2 ──
         self._tb2_disponibili = {
@@ -490,18 +533,43 @@ class ADIFtoPDFApp(ctk.CTk):
         # Profilo — etichetta + bottone a destra, fuori dal wrap (fisso)
         frame_profilo = ctk.CTkFrame(self, fg_color=_TB_BG, corner_radius=0)
         frame_profilo.pack(fill="x", side="top")
-        ctk.CTkLabel(frame_profilo, text=T("profili")+":",
-                     font=ctk.CTkFont(size=11),
-                     text_color=("#4A5568","#94A3B8")).pack(side="right", padx=(0,4), pady=4)
+        ctk.CTkLabel(frame_profilo, text="👤 " + T("profili") + ":",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=("#334155","#cbd5e1")).pack(side="right", padx=(0,4), pady=4)
         self.btn_profili = ctk.CTkButton(
             frame_profilo, text="—", command=self.apri_gestione_profili,
-            width=130, height=28,
+            width=150, height=30,
             fg_color=_BTN_ACT, hover_color=_BTN_ACT_HV,
             text_color=("#FFFFFF","#FFFFFF"),
-            font=ctk.CTkFont(size=11))
+            border_width=2, border_color=("#2563eb", "#60a5fa"),
+            font=ctk.CTkFont(size=13, weight="bold"))
         self.btn_profili.pack(side="right", padx=6, pady=4)
+        _tip(self.btn_profili, T("tip_profili"))
 
-        # ── 3. AREA PRINCIPALE (due colonne) ──────────────────
+        self.btn_log_uff = ctk.CTkButton(
+            frame_profilo, text="📂 Log", command=self.imposta_log_ufficiale,
+            width=64, height=28,
+            fg_color="#4A5568", hover_color=_BTN_ACT_HV,
+            text_color=("#FFFFFF", "#FFFFFF"),
+            font=ctk.CTkFont(size=11))
+        self.btn_log_uff.pack(side="right", padx=(0, 2), pady=4)
+        _tip(self.btn_log_uff,
+             T("tip_log_uff"))
+
+        # Badge modalità (evidente): EDITOR (grigio) / LOGGER (verde).
+        self.lbl_modalita = ctk.CTkLabel(
+            frame_profilo, text="● EDITOR", width=90, height=26,
+            corner_radius=6, fg_color="#4A5568", text_color="#e8edf2",
+            font=ctk.CTkFont(size=11, weight="bold"))
+        self.lbl_modalita.pack(side="right", padx=(0, 8), pady=4)
+        _tip(self.lbl_modalita,
+             T("tip_modalita"))
+
+        # ── BARRA RADIO ORIZZONTALE (sempre visibile, sopra l'area principale) ──
+        self._radiobar = ctk.CTkFrame(self, fg_color=("#0E2038", "#0A1A2E"),
+                                      corner_radius=0)
+        self._radiobar.pack(fill="x", side="top")
+
         # ── 3. AREA PRINCIPALE (due colonne) ──────────────────
         main = ctk.CTkFrame(self, fg_color="transparent")
         main.pack(fill="both", expand=True, padx=0, pady=0)
@@ -515,6 +583,50 @@ class ADIFtoPDFApp(ctk.CTk):
                                       border_width=0)
         left.grid(row=0, column=0, sticky="nsew")
 
+        # ── Navigazione (stile Cloudlog): pulsanti verticali flat, raggruppati ──
+        _NAV_HOVER = ("#DCE6F0", "#22303f")
+        def _navbtn(icon, key, cmd, primary=False):
+            b = ctk.CTkButton(
+                left, text=f"{icon}  {T(key)}", command=cmd, anchor="w",
+                height=30, corner_radius=6,
+                font=ctk.CTkFont(size=12, weight="bold" if primary else "normal"),
+                fg_color="transparent",
+                hover_color=_NAV_HOVER,
+                text_color=(("#2c7be5", "#5aa0ff") if primary else ("#1A365D", "#CBD5E1")))
+            b.pack(fill="x", padx=8, pady=1)
+            self._nav_btn_refs.append((b, icon, key))
+            return b
+        def _navgrp(key):
+            h = self._lbl_section(left, T(key))
+            self._sidebar_section_refs.append((h, key))
+
+        _navgrp("nav_grp_log")
+        _navbtn("📂", "nav_apri", self.sfoglia_file)
+        _navbtn("💾", "nav_salva", self.salva_adif)
+        _navbtn("📻", "nav_add_qso", self.apri_aggiungi_qso, primary=True)
+        _navbtn("📝", "nav_modifica", self.apri_editor_qso)
+        _navbtn("🕐", "nav_recenti", self.apri_storico)
+        _navgrp("nav_grp_adif")
+        _navbtn("📥", "importa_adif", self.importa_adif_intelligente)
+        _navbtn("📤", "esporta_adif", self.esporta_adif)
+        _navbtn("🔗", "nav_unisci", self.apri_unisci)
+        _navbtn("🏁", "nav_cbr", self.importa_cbr)
+        _navgrp("nav_grp_tools")
+        _navbtn("🔎", "nav_dupe", self.apri_duplicati)
+        _navbtn("🌐", "nav_country", self.deduci_country_da_nominativo)
+        _navbtn("📊", "nav_graf", self.apri_grafici)
+        _navbtn("📄", "nav_pdf", self.processa_e_salva)
+        _navbtn("🎨", "nav_qsl", self.apri_qsl_card_designer)
+        _navgrp("nav_grp_dx")
+        _navbtn("📡", "nav_cluster", self.apri_dx_cluster)
+        _navbtn("📶", "nav_fzr_alert", self.apri_fzr_alert)
+        _navbtn("🏆", "nav_award", self._apri_awards)
+        _navbtn("🔄", "nav_align", self.apri_lotw_allinea)
+        _navgrp("nav_grp_sys")
+        _navbtn("👤", "profili", self.apri_gestione_profili)
+        _navbtn("🗂", "nav_backup", self.imposta_cartella_backup)
+        _navbtn("♻", "nav_ripristina", self.ripristina_da_backup)
+
         # Sezione operatore
         s1 = self._lbl_section(left, T("sez_operatore"))
         self._sidebar_section_refs.append((s1, "sez_operatore"))
@@ -527,73 +639,78 @@ class ADIFtoPDFApp(ctk.CTk):
         self.entry_details = ctk.CTkEntry(left, placeholder_text=T("sb_details_ph"))
         self.entry_details.pack(fill="x", padx=10, pady=(0,10))
 
-        # ── DISPLAY RADIO (frequenza dal vivo via OmniRig) ──────────
-        _is_dark = ctk.get_appearance_mode().lower() == "dark"
-        radio_box = ctk.CTkFrame(left, fg_color=("#0E2038", "#0A1A2E"),
-                                 corner_radius=8)
-        radio_box.pack(fill="x", padx=10, pady=(0, 10))
-        # Riga stato: pallino + label RADIO + badge SPLIT
-        _rtop = ctk.CTkFrame(radio_box, fg_color="transparent")
-        _rtop.pack(fill="x", padx=10, pady=(6, 0))
-        self.sb_radio_dot = ctk.CTkLabel(_rtop, text="●", font=ctk.CTkFont(size=12),
+        # ── DISPLAY RADIO (barra orizzontale, sempre visibile) ──────────
+        _rin = ctk.CTkFrame(self._radiobar, fg_color="transparent")
+        _rin.pack(fill="x", padx=12, pady=6)
+        self.sb_radio_dot = ctk.CTkLabel(_rin, text="●", font=ctk.CTkFont(size=12),
                                          text_color="#64748B")
         self.sb_radio_dot.pack(side="left")
-        # Nome radio (es. "IC-7600"); se non nota mostra "RADIO"
-        self.sb_radio_nome = ctk.CTkLabel(_rtop, text="RADIO",
+        self.sb_radio_nome = ctk.CTkLabel(_rin, text="RADIO",
                                           font=ctk.CTkFont(size=10, weight="bold"),
                                           text_color="#64748B")
-        self.sb_radio_nome.pack(side="left", padx=(4, 0))
-        # Badge SPLIT (a destra, visibile solo quando lo split è attivo)
-        self.sb_radio_split = ctk.CTkLabel(_rtop, text="", font=ctk.CTkFont(size=10, weight="bold"),
-                                           text_color="#FFFFFF", fg_color="transparent",
-                                           corner_radius=4, width=48)
-        self.sb_radio_split.pack(side="right")
-        # Etichetta VFO-A
-        self.sb_radio_lbl_a = ctk.CTkLabel(radio_box, text="VFO-A",
+        self.sb_radio_nome.pack(side="left", padx=(4, 14))
+        self.sb_radio_lbl_a = ctk.CTkLabel(_rin, text="VFO-A",
                                            font=ctk.CTkFont(size=9, weight="bold"),
                                            text_color="#64748B")
-        self.sb_radio_lbl_a.pack(padx=10, pady=(4, 0))
-        # Frequenza grande (VFO-A)
-        self.sb_radio_freq = ctk.CTkLabel(radio_box, text="—.—————",
-                                          font=ctk.CTkFont(size=26, weight="bold"),
+        self.sb_radio_lbl_a.pack(side="left", padx=(0, 4))
+        self.sb_radio_freq = ctk.CTkLabel(_rin, text="—.—————",
+                                          font=ctk.CTkFont(size=24, weight="bold"),
                                           text_color=TH.OK_TEXT, cursor="hand2")
-        self.sb_radio_freq.pack(padx=10, pady=(0, 0))
+        self.sb_radio_freq.pack(side="left")
         self.sb_radio_freq.bind("<Button-1>", lambda e: self._logga_da_barra_radio())
-        # Modo e banda piccoli
-        _rbot = ctk.CTkFrame(radio_box, fg_color="transparent")
-        _rbot.pack(pady=(0, 6))
-        self.sb_radio_mode = ctk.CTkLabel(_rbot, text="—",
-                                          font=ctk.CTkFont(size=13, weight="bold"),
+        self.sb_radio_mode = ctk.CTkLabel(_rin, text="—",
+                                          font=ctk.CTkFont(size=14, weight="bold"),
                                           text_color=TH.PRIMARY)
-        self.sb_radio_mode.pack(side="left", padx=(0, 10))
-        self.sb_radio_band = ctk.CTkLabel(_rbot, text="—",
-                                          font=ctk.CTkFont(size=13, weight="bold"),
+        self.sb_radio_mode.pack(side="left", padx=(14, 6))
+        self.sb_radio_band = ctk.CTkLabel(_rin, text="—",
+                                          font=ctk.CTkFont(size=14, weight="bold"),
                                           text_color="#FBBF24")
         self.sb_radio_band.pack(side="left")
-        # Separatore + VFO-B (visibili solo in split)
-        self.sb_radio_sep = ctk.CTkFrame(radio_box, height=1, fg_color="#1E3A5F")
-        self.sb_radio_lbl_b = ctk.CTkLabel(radio_box, text="VFO-B  ·  TX",
+
+
+        # VFO-B / split — packati dinamicamente in _aggiorna_barra_radio
+        self.sb_radio_sep = ctk.CTkFrame(_rin, width=2, height=28, fg_color="#1E3A5F")
+        self.sb_radio_lbl_b = ctk.CTkLabel(_rin, text="VFO-B  ·  TX",
                                            font=ctk.CTkFont(size=9, weight="bold"),
                                            text_color="#64748B")
-        self.sb_radio_vfob = ctk.CTkLabel(radio_box, text="",
-                                          font=ctk.CTkFont(size=18, weight="bold"),
+        self.sb_radio_vfob = ctk.CTkLabel(_rin, text="",
+                                          font=ctk.CTkFont(size=16, weight="bold"),
                                           text_color="#F472B6")
-        # (sep, lbl_b e vfob vengono packati/nascosti dinamicamente in _aggiorna_barra_radio)
-        # Pulsanti controllo VFO: swap A<->B e toggle split
-        _rctrl = ctk.CTkFrame(radio_box, fg_color="transparent")
-        _rctrl.pack(fill="x", padx=8, pady=(0, 8))
-        self.sb_btn_swap = ctk.CTkButton(_rctrl, text="⇄ A/B",
-                                         font=ctk.CTkFont(size=11, weight="bold"),
-                                         height=26, fg_color="#2D3748",
-                                         hover_color="#4A5568",
-                                         command=self._radio_vfo_swap)
-        self.sb_btn_swap.pack(side="left", expand=True, fill="x", padx=(0, 3))
-        self.sb_btn_split = ctk.CTkButton(_rctrl, text="SPLIT",
+        # a destra: pulsanti VFO e badge SPLIT
+        self.sb_btn_split = ctk.CTkButton(_rin, text="SPLIT",
                                           font=ctk.CTkFont(size=11, weight="bold"),
-                                          height=26, fg_color="#2D3748",
+                                          height=26, width=64, fg_color="#2D3748",
                                           hover_color="#4A5568",
                                           command=self._radio_toggle_split)
-        self.sb_btn_split.pack(side="left", expand=True, fill="x", padx=(3, 0))
+        self.sb_btn_split.pack(side="right", padx=(4, 0))
+        self.sb_btn_swap = ctk.CTkButton(_rin, text="⇄ A/B",
+                                         font=ctk.CTkFont(size=11, weight="bold"),
+                                         height=26, width=64, fg_color="#2D3748",
+                                         hover_color="#4A5568",
+                                         command=self._radio_vfo_swap)
+        self.sb_btn_swap.pack(side="right", padx=(4, 4))
+        self.sb_radio_split = ctk.CTkLabel(_rin, text="",
+                                           font=ctk.CTkFont(size=10, weight="bold"),
+                                           text_color="#FFFFFF", fg_color="transparent",
+                                           corner_radius=4, width=48)
+        self.sb_radio_split.pack(side="right", padx=(0, 10))
+
+        # ── Orologio doppio (a destra, vicino ai comandi VFO) ──
+        #  packing side="right" in ordine inverso -> a video: | UTC hh:mm:ss  LOC hh:mm:ss |
+        self.sb_clock_loc = ctk.CTkLabel(_rin, text="--:--:--",
+                                         font=ctk.CTkFont(family="Consolas", size=18, weight="bold"),
+                                         text_color="#FBBF24")
+        self.sb_clock_loc.pack(side="right", padx=(0, 14))
+        ctk.CTkLabel(_rin, text="LOC", font=ctk.CTkFont(size=9, weight="bold"),
+                     text_color="#64748B").pack(side="right", padx=(10, 4))
+        self.sb_clock_utc = ctk.CTkLabel(_rin, text="--:--:--",
+                                         font=ctk.CTkFont(family="Consolas", size=18, weight="bold"),
+                                         text_color="#5EEAD4")
+        self.sb_clock_utc.pack(side="right")
+        ctk.CTkLabel(_rin, text="UTC", font=ctk.CTkFont(size=9, weight="bold"),
+                     text_color="#64748B").pack(side="right", padx=(16, 4))
+        ctk.CTkFrame(_rin, width=2, height=28, fg_color="#1E3A5F").pack(side="right", padx=(12, 10))
+        self.after(300, self._tick_orologio)
 
         # Sezione campi PDF — NASCOSTA dalla sidebar, visibile nel dialog Genera PDF
         grid_cb = ctk.CTkFrame(left, fg_color="transparent")
@@ -606,8 +723,21 @@ class ADIFtoPDFApp(ctk.CTk):
             self._checkbox_widgets[tag] = cb
 
         # FILTRI espansi direttamente nella sidebar
-        s2 = self._lbl_section(left, T("sez_filtri"))
-        self._sidebar_section_refs.append((s2, "sez_filtri"))
+        # FILTRI — sezione a scomparsa (header cliccabile)
+        self._fil_aperti = True
+        def _toggle_filtri():
+            self._fil_aperti = not self._fil_aperti
+            if self._fil_aperti:
+                frame_fil.pack(fill="x", padx=8, pady=(0, 4))
+            else:
+                frame_fil.pack_forget()
+            self._agg_hdr_filtri()
+        self._fil_hdr = ctk.CTkButton(left, text="▾  " + T("sez_filtri"), anchor="w",
+                                 fg_color="transparent", hover_color=_NAV_HOVER,
+                                 font=ctk.CTkFont(size=11, weight="bold"),
+                                 text_color=("#1A365D", "#94A3B8"), height=26,
+                                 command=_toggle_filtri)
+        self._fil_hdr.pack(fill="x", padx=8, pady=(8, 2))
 
         frame_fil = ctk.CTkFrame(left, fg_color="transparent")
         frame_fil.pack(fill="x", padx=8, pady=(0,4))
@@ -702,6 +832,16 @@ class ADIFtoPDFApp(ctk.CTk):
         self.lbl_status = ctk.CTkLabel(tg, text=T("nessun_file"),
                                        text_color="gray", font=ctk.CTkFont(size=11))
         self.lbl_status.pack(side="left", padx=8)
+
+        # Ordine di visualizzazione: recenti in alto + limite 500 righe.
+        self.var_ordine_inv = ctk.BooleanVar(value=False)
+        ctk.CTkSwitch(tg, text=T("sw_recenti"), variable=self.var_ordine_inv,
+                      command=self._toggle_vista, font=ctk.CTkFont(size=11)
+                      ).pack(side="left", padx=(14, 4))
+        self.var_limite500 = ctk.BooleanVar(value=False)
+        ctk.CTkSwitch(tg, text=T("sw_solo500"), variable=self.var_limite500,
+                      command=self._toggle_vista, font=ctk.CTkFont(size=11)
+                      ).pack(side="left", padx=4)
 
         # ── Indicatore selezione QSO + esporta selezione ──
         self.btn_sel_tutti = ctk.CTkButton(
@@ -861,7 +1001,8 @@ class ADIFtoPDFApp(ctk.CTk):
         self.tree.tag_configure("ft8",     background="#1A3A2A" if is_dark else "#E6F4EA", foreground="#4ADE80" if is_dark else "#166534")
         self.tree.tag_configure("ft4",     background="#1A3A2A" if is_dark else "#E6F4EA", foreground="#4ADE80" if is_dark else "#166534")
         self.tree.tag_configure("cw",      background="#1A2A3A" if is_dark else "#EBF4FF", foreground="#90CDF4" if is_dark else "#1A4480")
-        self.tree.tag_configure("ssb",     background=bg_even)
+        self.tree.tag_configure("ssb",     background="#3A2E1A" if is_dark else "#FFF6E6", foreground="#F6C177" if is_dark else "#92400E")
+        self.tree.tag_configure("digi",    background="#25203A" if is_dark else "#F1ECFF", foreground="#C4B5FD" if is_dark else "#5B21B6")
         self.tree.tag_configure("sat_row", background="#2A1A3A" if is_dark else "#FAF0FF", foreground="#D8B4FE" if is_dark else "#6B21A8")
         self.tree.tag_configure("eme",     background="#3A1A1A" if is_dark else "#FFF0F0", foreground="#FCA5A5" if is_dark else "#991B1B")
 
@@ -967,6 +1108,8 @@ class ADIFtoPDFApp(ctk.CTk):
         self.tree.bind("<Shift-Button-1>", lambda e: self._on_tree_shift_click(e))
         # Click destro → menu contestuale
         self.tree.bind("<Button-3>", lambda e: self._on_tree_right_click(e))
+        # Doppio clic → finestra Modifica QSO
+        self.tree.bind("<Double-1>", lambda e: self._on_tree_double(e))
         self._ep_idx = None  # indice QSO corrente
 
         # ── 4. STATUS BAR ─────────────────────────────────────
@@ -1012,6 +1155,13 @@ class ADIFtoPDFApp(ctk.CTk):
         return lbl
 
     # ── Riempie il Treeview con i QSO caricati ─
+    def _toggle_vista(self):
+        """Applica ordine inverso (recenti in alto) e limite righe (500)."""
+        self._ordine_inverso = bool(self.var_ordine_inv.get())
+        self._limite_vista = 500 if self.var_limite500.get() else 0
+        if self.qsos_caricati:
+            self._aggiorna_tree()
+
     def _aggiorna_tree(self):
         self.tree.delete(*self.tree.get_children())
         qsos = self._qsos_attivi()
@@ -1059,7 +1209,16 @@ class ADIFtoPDFApp(ctk.CTk):
 
         is_dark = ctk.get_appearance_mode().lower() == "dark"
 
-        for i, qso in enumerate(qsos):
+        # Ordine di visualizzazione: opzionale 'recenti in alto' e limite righe.
+        # L'iid resta l'indice reale in qsos, quindi selezione/modifica non cambiano.
+        _idxs = list(range(len(qsos)))
+        if getattr(self, '_ordine_inverso', False):
+            _idxs.reverse()
+        _lim = getattr(self, '_limite_vista', 0)
+        if _lim and len(_idxs) > _lim:
+            _idxs = _idxs[:_lim]
+        for _disp, i in enumerate(_idxs):
+            qso = qsos[i]
             data = str(qso.get('qso_date',''))
             if len(data)==8:
                 data = f"{data[6:8]}/{data[4:6]}/{data[0:4]}"
@@ -1089,7 +1248,7 @@ class ADIFtoPDFApp(ctk.CTk):
             # (caso comune nei log che usano ADIF con submode esplicito).
             modo_per_colore = submode if (modo == "MFSK" and submode) else modo
             if not self.var_colora_righe.get():
-                tag = "even" if i%2==0 else "odd"
+                tag = "even" if _disp%2==0 else "odd"
             elif sat:
                 tag = "sat_row"
             elif prop in ('EME','MS','METEOR','AURORA','FAI','SPORADIC-E','ES'):
@@ -1100,8 +1259,16 @@ class ADIFtoPDFApp(ctk.CTk):
                 tag = "ft4"
             elif modo_per_colore in ('CW',):
                 tag = "cw"
+            elif modo_per_colore in ('SSB', 'USB', 'LSB', 'AM', 'FM'):
+                tag = "ssb"
+            elif modo_per_colore in ('RTTY', 'PSK', 'PSK31', 'PSK63', 'PSK125',
+                                     'JT65', 'JT9', 'MFSK', 'OLIVIA', 'DOMINO',
+                                     'THOR', 'CONTESTIA', 'HELL', 'ROS', 'FSK441',
+                                     'JT6M', 'QRA64', 'FST4', 'FST4W', 'FT2',
+                                     'DIGITAL', 'DATA', 'DG', 'DIGITALVOICE'):
+                tag = "digi"
             else:
-                tag = "even" if i%2==0 else "odd"
+                tag = "even" if _disp%2==0 else "odd"
 
             # "#" mostra ✓ se il QSO è già in coda export (persiste tra filtri/ricerche)
             numero = "✓" if self._trova_in_coda(qso) != -1 else i+1
@@ -1142,6 +1309,18 @@ class ADIFtoPDFApp(ctk.CTk):
             self.sb_filt.configure(text=f"[Filtro attivo: {vis}/{tot}]")
         else:
             self.sb_filt.configure(text="")
+
+    def _tick_orologio(self):
+        import time as _t
+        try:
+            self.sb_clock_utc.configure(text=_t.strftime("%H:%M:%S", _t.gmtime()))
+            self.sb_clock_loc.configure(text=_t.strftime("%H:%M:%S", _t.localtime()))
+        except Exception:
+            pass
+        try:
+            self.after(1000, self._tick_orologio)
+        except Exception:
+            pass
 
     def _aggiorna_barra_radio(self):
         """Aggiorna il display radio nella sidebar leggendo da OmniRig.
@@ -1267,13 +1446,15 @@ class ADIFtoPDFApp(ctk.CTk):
                                                   text_color="#3A4A5F")
                     self.sb_radio_lbl_a.configure(text="VFO-A")
                 if not self.sb_radio_sep.winfo_ismapped():
-                    self.sb_radio_sep.pack(fill="x", padx=14, pady=(2, 4))
-                    self.sb_radio_lbl_b.pack(padx=10, pady=(0, 0))
-                    self.sb_radio_vfob.pack(padx=10, pady=(0, 8))
+                    self.sb_radio_sep.pack(side="left", fill="y", padx=(14, 8))
+                    self.sb_radio_lbl_b.pack(side="left", padx=(0, 4))
+                    self.sb_radio_vfob.pack(side="left")
             else:
                 # Nessun FreqB esposto: nascondi la sezione
                 if self.sb_radio_sep.winfo_ismapped():
                     self.sb_radio_sep.pack_forget()
+                    self.sb_radio_lbl_b.pack_forget()
+                    self.sb_radio_vfob.pack_forget()
                     self.sb_radio_lbl_b.pack_forget()
                     self.sb_radio_vfob.pack_forget()
         except Exception:
@@ -1452,6 +1633,10 @@ class ADIFtoPDFApp(ctk.CTk):
             label=f"📡 Info stazione  [HamQTH]",
             command=lambda: self._cerca_hamqth(call, idx),
             state="normal" if call else "disabled")
+        menu.add_command(
+            label=f"🌐 Info stazione  [QRZ.com]",
+            command=lambda: self._cerca_qrz(call, idx),
+            state="normal" if call else "disabled")
         menu.add_separator()
         menu.add_command(
             label=T("menu_copia_call"),
@@ -1492,6 +1677,234 @@ class ADIFtoPDFApp(ctk.CTk):
             return
         HamQTHDialog(self, info, call, qso_idx)
 
+
+    def _cerca_qrz(self, call, qso_idx=None):
+        """Lookup callsign su QRZ.com e mostra la finestra info (riusa il
+        dialogo HamQTH: stesso formato dati, applica i campi al QSO)."""
+        if not call:
+            return
+        profili = self._carica_profili()
+        dati = profili.get(self.profilo_attivo, {}) if self.profilo_attivo else {}
+        qz_user = dati.get("qrz_username", "").strip()
+        qz_pass = dati.get("qrz_password", "").strip()
+        if not (qz_user and qz_pass):
+            messagebox.showwarning(T("attenzione"), T("qrz_no_config"))
+            return
+        try:
+            from net.qrz import QRZClient
+        except Exception as ex:
+            messagebox.showerror("QRZ", str(ex), parent=self)
+            return
+        client = QRZClient(qz_user, qz_pass)
+        info, err = client.lookup(call)
+        if err == "NOT_FOUND":
+            messagebox.showinfo("QRZ.com", T("lookup_non_trovato"), parent=self)
+            return
+        if err:
+            messagebox.showerror("QRZ.com", T("qrz_login_err", msg=err), parent=self)
+            return
+        HamQTHDialog(self, info, call, qso_idx)
+
+    def _set_campo_qso(self, q, key, val):
+        """Scrive un campo nel QSO rispettando il case della chiave esistente."""
+        kl = {k.lower(): k for k in q.keys()}
+        real = kl.get(key.lower(), key)
+        q[real] = val
+
+    def _get_campo_qso(self, q, key):
+        for k in (key, key.lower(), key.upper()):
+            if k in q:
+                return str(q[k])
+        return ""
+
+    def _on_tree_double(self, event):
+        iid = self.tree.identify_row(event.y)
+        if not iid:
+            return
+        try:
+            self.apri_editor_qso(int(iid))
+        except Exception:
+            self.apri_editor_qso()
+
+    _ED_CAMPI = [
+        ("ed_grp_contatto", [("call", "f_call"), ("qso_date", "f_data"),
+                             ("time_on", "f_ora"), ("band", "f_banda"),
+                             ("mode", "f_modo"), ("freq", "f_freq"),
+                             ("rst_sent", "f_rst_s"), ("rst_rcvd", "f_rst_r"),
+                             ("name", "f_nome")]),
+        ("ed_grp_localita", [("qth", "f_qth"), ("gridsquare", "f_grid"),
+                             ("dxcc", "f_dxcc"), ("country", "f_country"),
+                             ("cont", "f_cont"), ("cqz", "f_cqz"),
+                             ("ituz", "f_ituz"), ("state", "f_state"),
+                             ("iota", "f_iota")]),
+        ("ed_grp_sat", [("sat_name", "f_sat"), ("prop_mode", "f_prop"),
+                        ("sat_mode", "f_satmode"), ("band_rx", "f_bandarx"),
+                        ("freq_rx", "f_freqrx")]),
+        ("ed_grp_conferme", [("lotw_qsl_rcvd", "f_lotw"), ("eqsl_qsl_rcvd", "f_eqsl"),
+                             ("qsl_rcvd", "f_paper"), ("comment", "f_note")]),
+    ]
+
+    def apri_editor_qso(self, idx=None):
+        """Finestra Modifica QSO: ricerca, navigazione prev/next, lookup
+        HamQTH/QRZ, salvataggio nel log in memoria."""
+        qsos = self._qsos_attivi()
+        if not qsos:
+            messagebox.showinfo(T("ed_ttl"), T("ed_no_qso"))
+            return
+        if idx is None:
+            sel = self.tree.selection()
+            try:
+                idx = int(sel[0]) if sel else 0
+            except Exception:
+                idx = 0
+        idx = max(0, min(idx, len(qsos) - 1))
+
+        dlg = ctk.CTkToplevel(self)
+        dlg.title(T("ed_ttl"))
+        dlg.geometry("640x640")
+        dlg.minsize(560, 480)
+        dlg.transient(self); dlg.lift(); dlg.focus_force()
+        dlg.attributes('-topmost', True)
+        dlg.after(300, lambda: dlg.winfo_exists() and dlg.attributes('-topmost', False))
+
+        cur = [idx]
+        ent = {}
+
+        # --- barra ricerca + navigazione ---
+        top = ctk.CTkFrame(dlg, fg_color="transparent")
+        top.pack(fill="x", padx=14, pady=(12, 4))
+        ctk.CTkLabel(top, text=T("ed_cerca"), font=ctk.CTkFont(size=11)).pack(side="left")
+        e_find = ctk.CTkEntry(top, width=150); e_find.pack(side="left", padx=(6, 4))
+        lbl_pos = ctk.CTkLabel(top, text="", font=ctk.CTkFont(size=11), text_color="gray")
+
+        # --- corpo: gruppi di campi ---
+        body = ctk.CTkScrollableFrame(dlg, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=10, pady=4)
+        for grp_key, campi in self._ED_CAMPI:
+            gf = ctk.CTkFrame(body)
+            gf.pack(fill="x", padx=4, pady=(4, 8))
+            ctk.CTkLabel(gf, text=T(grp_key), anchor="w",
+                         font=ctk.CTkFont(size=12, weight="bold")).grid(
+                             row=0, column=0, columnspan=4, sticky="w", padx=8, pady=(6, 2))
+            for i, (fk, lk) in enumerate(campi):
+                r = 1 + i // 2
+                c = (i % 2) * 2
+                ctk.CTkLabel(gf, text=T(lk), width=72, anchor="e",
+                             font=ctk.CTkFont(size=11)).grid(row=r, column=c, sticky="e",
+                                                             padx=(8, 4), pady=2)
+                e = ctk.CTkEntry(gf, width=200)
+                e.grid(row=r, column=c + 1, sticky="w", padx=(0, 8), pady=2)
+                ent[fk] = e
+
+        def _carica(i):
+            cur[0] = max(0, min(i, len(qsos) - 1))
+            q = qsos[cur[0]]
+            for fk, e in ent.items():
+                e.delete(0, "end")
+                e.insert(0, self._get_campo_qso(q, fk))
+            lbl_pos.configure(text=T("ed_di", i=cur[0] + 1, n=len(qsos)))
+            dlg.title(f'{T("ed_ttl")} — {self._get_campo_qso(q, "call").upper() or "?"}')
+
+        def _applica():
+            q = qsos[cur[0]]
+            for fk, e in ent.items():
+                self._set_campo_qso(q, fk, e.get().strip())
+            self._log_modificato = True
+            self._aggiorna_tree()
+
+        def _vai(delta):
+            _applica()
+            _carica(cur[0] + delta)
+
+        def _trova(_ev=None):
+            t = e_find.get().strip().lower()
+            if not t:
+                return
+            for j in range(len(qsos)):
+                q = qsos[j]
+                if (t in self._get_campo_qso(q, "call").lower() or
+                        self._get_campo_qso(q, "qso_date").startswith(t.replace("-", ""))):
+                    _applica(); _carica(j); return
+            messagebox.showinfo(T("ed_ttl"), T("ed_non_trovato", q=e_find.get().strip()), parent=dlg)
+
+        def _lookup(source):
+            call = ent["call"].get().strip().upper()
+            if not call:
+                messagebox.showwarning(T("attenzione"), T("ed_call_vuoto"), parent=dlg)
+                return
+            profili = self._carica_profili()
+            d = profili.get(self.profilo_attivo, {}) if self.profilo_attivo else {}
+            if source == "qrz":
+                try:
+                    from net.qrz import QRZClient
+                except Exception as ex:
+                    messagebox.showerror("QRZ", str(ex), parent=dlg); return
+                u, p = d.get("qrz_username", "").strip(), d.get("qrz_password", "").strip()
+                if not (u and p):
+                    messagebox.showwarning(T("attenzione"), T("qrz_no_config"), parent=dlg); return
+                client = QRZClient(u, p)
+            else:
+                u, p = d.get("hamqth_username", "").strip(), d.get("hamqth_password", "").strip()
+                if not (u and p):
+                    messagebox.showwarning(T("attenzione"), T("hqth_no_config"), parent=dlg); return
+                client = HamQTHClient(u, p)
+            info, err = client.lookup(call)
+            if err == "NOT_FOUND":
+                messagebox.showinfo(source.upper(), T("lookup_non_trovato"), parent=dlg); return
+            if err:
+                messagebox.showerror(source.upper(), err, parent=dlg); return
+            mapp = {"name": "name", "qth": "qth", "grid": "gridsquare", "cq": "cqz",
+                    "itu": "ituz", "country": "country", "dxcc": "dxcc", "state": "state"}
+            for src, fk in mapp.items():
+                v = str(info.get(src, "")).strip()
+                if v and fk in ent:
+                    ent[fk].delete(0, "end"); ent[fk].insert(0, v)
+
+        ctk.CTkButton(top, text=T("ed_trova"), width=60, height=26,
+                      command=_trova).pack(side="left", padx=(0, 8))
+        e_find.bind("<Return>", _trova)
+        ctk.CTkButton(top, text="◀", width=36, height=26,
+                      command=lambda: _vai(-1)).pack(side="left", padx=(0, 2))
+        ctk.CTkButton(top, text="▶", width=36, height=26,
+                      command=lambda: _vai(1)).pack(side="left")
+        lbl_pos.pack(side="right")
+
+        # --- lookup + elimina + salva/chiudi ---
+        def _elimina():
+            if not qsos:
+                return
+            q = qsos[cur[0]]
+            call = self._get_campo_qso(q, "call").upper() or "?"
+            if not messagebox.askyesno(T("ed_ttl"), T("ed_conf_del", call=call), parent=dlg):
+                return
+            self._push_undo()
+            for L in (self.qsos_caricati, self.qsos_filtrati):
+                for i in range(len(L) - 1, -1, -1):
+                    if L[i] is q:
+                        del L[i]
+            self._log_modificato = True
+            self._aggiorna_tree()
+            if not qsos:
+                dlg.destroy()
+                return
+            _carica(min(cur[0], len(qsos) - 1))
+
+        bar = ctk.CTkFrame(dlg, fg_color="transparent")
+        bar.pack(side="bottom", fill="x", padx=14, pady=(4, 12))
+        ctk.CTkButton(bar, text=T("ed_lookup_hq"), width=104, height=34, fg_color="#4A5568",
+                      command=lambda: _lookup("hamqth")).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(bar, text=T("ed_lookup_qrz"), width=84, height=34, fg_color="#4A5568",
+                      command=lambda: _lookup("qrz")).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(bar, text=T("ed_elimina"), width=104, height=34,
+                      fg_color="#b23a48", hover_color="#8f2d39",
+                      command=_elimina).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(bar, text=T("btn_chiudi"), width=84, height=34, fg_color="#718096",
+                      command=dlg.destroy).pack(side="right")
+        ctk.CTkButton(bar, text=T("ed_salva"), width=110, height=34, fg_color="#1f7a4d",
+                      hover_color="#18613c", font=ctk.CTkFont(size=12, weight="bold"),
+                      command=lambda: (_applica(), dlg.destroy())).pack(side="right", padx=(0, 6))
+
+        _carica(cur[0])
 
     def _hint_hamqth(self):
         """Apre HamQTH lookup per il QSO selezionato, o mostra suggerimento."""
@@ -1692,11 +2105,28 @@ class ADIFtoPDFApp(ctk.CTk):
         return "break"
 
     # ── Coda export: lista di QSO (riferimenti agli stessi dict di qsos_caricati) ──
+    def _qso_sig(self, q):
+        """Firma stabile di un QSO per riconoscerlo anche tra oggetti ricostruiti
+        (dopo filtri/ricerche/ricariche). Usa i campi identificativi del contatto."""
+        try:
+            g = lambda k: str(q.get(k, '')).upper().strip()
+        except Exception:
+            return None
+        return (g('call'), g('qso_date'), g('time_on'), g('band'), g('mode'), g('sat_name'))
+
     def _trova_in_coda(self, qso):
-        """Restituisce l'indice di qso nella coda export (per identità), o -1."""
+        """Restituisce l'indice di qso nella coda export, o -1.
+        Prima per identità (esatto), poi per firma-contenuto: così la
+        (de)selezione regge anche se la lista QSO è stata ricostruita
+        con oggetti diversi ma equivalenti (es. dopo un cambio filtro)."""
         for i, q in enumerate(self._coda_export):
             if q is qso:
                 return i
+        sig = self._qso_sig(qso)
+        if sig is not None:
+            for i, q in enumerate(self._coda_export):
+                if self._qso_sig(q) == sig:
+                    return i
         return -1
 
     def _aggiungi_coda_export(self, qso):
@@ -2306,12 +2736,15 @@ class ADIFtoPDFApp(ctk.CTk):
         self.apri_calcolatore_distanza(locator_other_prefill=locator_qso)
 
     # ── Esporta Cabrillo standalone ────────────
-    def esporta_cabrillo_standalone(self):
+    def esporta_cabrillo_standalone(self, qsos=None):
         from tkinter import messagebox, filedialog
-        if not self.qsos_caricati:
+        if qsos is None and not self.qsos_caricati:
             messagebox.showwarning("Attenzione", T("warn_nessun_file"))
             return
-        qsos_exp = list(self._qsos_attivi())
+        qsos_exp = list(qsos) if qsos is not None else list(self._qsos_attivi())
+        if not qsos_exp:
+            messagebox.showwarning("Attenzione", T("warn_nessun_file"))
+            return
 
         dlg = ctk.CTkToplevel(self)
         dlg.title("Esporta Cabrillo Contest")
@@ -2386,7 +2819,7 @@ class ADIFtoPDFApp(ctk.CTk):
                     if f_loc.get().strip():
                         fw.write(f"LOCATION: {f_loc.get().strip()}{nl}")
                     fw.write(f"CLAIMED-SCORE: {f_score.get().strip() or '0'}{nl}")
-                    fw.write(f"CREATED-BY: ADIF FZR 2.5{nl}{nl}")
+                    fw.write(f"CREATED-BY: ADIF FZR {VERSIONE}{nl}{nl}")
 
                     FREQ_MAP = {"160m":"1800","80m":"3500","60m":"5357","40m":"7000",
                         "30m":"10100","20m":"14000","17m":"18068","15m":"21000",
@@ -2460,6 +2893,47 @@ class ADIFtoPDFApp(ctk.CTk):
         ctk.CTkButton(dlg, text="OK", command=dlg.destroy, width=80).pack(pady=15)
 
     # ── Calcolatore Distanza / Bearing ─────────
+    def _aq_geometria_iniziale(self):
+        """Geometria della finestra Aggiungi QSO: quella salvata nel profilo,
+        altrimenti il default. Con guardia anti-fuori-schermo (cambio monitor)."""
+        default = "1280x760"
+        try:
+            import re as _re
+            prof = self._carica_profili().get(self.profilo_attivo, {}) if self.profilo_attivo else {}
+            g = str(prof.get("aq_geom", "")).strip()
+            if not g:
+                return default
+            m = _re.match(r"(\d+)x(\d+)([+-]\d+)([+-]\d+)$", g)
+            if not m:
+                return g if _re.match(r"(\d+)x(\d+)$", g) else default
+            w, h, x, y = (int(m.group(1)), int(m.group(2)),
+                          int(m.group(3)), int(m.group(4)))
+            sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+            w = max(700, min(w, sw)); h = max(460, min(h, sh))
+            if x < -50 or x > sw - 100:
+                x = max(0, (sw - w) // 2)
+            if y < -30 or y > sh - 100:
+                y = max(0, (sh - h) // 2)
+            return f"{w}x{h}+{x}+{y}"
+        except Exception:
+            return default
+
+    def _aq_salva_geometria(self, dlg):
+        """Salva dimensione e posizione della finestra Aggiungi QSO nel profilo."""
+        try:
+            if not self.profilo_attivo:
+                return
+            g = dlg.geometry()   # "WxH+X+Y"
+            if not g or "x" not in g:
+                return
+            profili = self._carica_profili()
+            if self.profilo_attivo in profili:
+                profili[self.profilo_attivo]["aq_geom"] = g
+                with open(self.profili_path, "w", encoding="utf-8") as f:
+                    json.dump(profili, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
     def apri_aggiungi_qso(self):
         """Finestra di inserimento rapido per QSO fatti manualmente (non
         loggati a computer). Data/Ora sono un orologio UTC live aggiornato
@@ -2492,25 +2966,37 @@ class ADIFtoPDFApp(ctk.CTk):
 
         dlg = ctk.CTkToplevel(self)
         dlg.title(T("addqso_titolo"))
-        dlg.geometry("500x720")
-        dlg.resizable(False, True)
-        dlg.minsize(460, 520)
+        dlg.geometry(self._aq_geometria_iniziale())
+        dlg.resizable(True, True)
+        dlg.minsize(1120, 680)
+        dlg.transient(self)          # figlia della finestra principale
         dlg.lift(); dlg.focus_force()
         self._aggiungi_qso_dlg = dlg   # riferimento per precompilazione da DX Cluster
+        # Topmost SOLO per un istante all'apertura: appare davanti, poi torna
+        # una finestra normale (non resta incollata sopra tutte le altre app).
         dlg.attributes('-topmost', True)
-        # Niente grab_set(): la finestra resta utilizzabile insieme alla
-        # principale (puoi comunque scorrere/cliccare la griglia), ma
-        # 'topmost' la mantiene sempre visibile sopra le altre finestre,
-        # così non sparisce dietro cliccando altrove nel programma.
+        dlg.after(400, lambda: dlg.winfo_exists() and dlg.attributes('-topmost', False))
 
-        ctk.CTkLabel(dlg, text="➕ " + T("addqso_titolo"),
-                     font=ctk.CTkFont(size=15, weight="bold")).pack(pady=(16, 4))
+        ctk.CTkLabel(dlg, text="➕  " + T("addqso_titolo"),
+                     font=ctk.CTkFont(size=17, weight="bold"),
+                     text_color=("#17324D", "#E7F1FB")).pack(pady=(10, 2))
 
         contatore_var = _tk.StringVar(value="")
         ctk.CTkLabel(dlg, textvariable=contatore_var, font=ctk.CTkFont(size=10),
                      text_color="gray").pack(pady=(0, 8))
 
-        form = ctk.CTkScrollableFrame(dlg, fg_color="transparent")
+        body = ctk.CTkFrame(dlg, fg_color="transparent")
+        # NB: 'body' viene "packato" più in basso, DOPO i pulsanti (barra sempre in fondo)
+        paned = _tk.PanedWindow(body, orient="horizontal", sashwidth=8,
+                                sashrelief="raised", bd=0, bg="#0e1620", opaqueresize=True)
+        qb_side = ctk.CTkFrame(paned, fg_color=("#EEF3F8", "#141C25"), corner_radius=10, width=360, border_width=1, border_color=("#D5DEE8", "#26384A"))
+        form = ctk.CTkFrame(paned, fg_color=("#F8FAFC", "#101820"), corner_radius=10, border_width=1, border_color=("#D9E2EC", "#26384A"))
+        # Layout stile logger: due colonne operative (QSO + Stazione) e, a destra, Worked Before.
+        form.grid_columnconfigure(0, weight=1, minsize=210)
+        form.grid_columnconfigure(1, weight=1, minsize=210)
+        form.grid_columnconfigure(2, weight=1, minsize=210)
+        form.grid_columnconfigure(3, weight=1, minsize=210)
+
         # NB: il form viene "packato" più in basso, DOPO i pulsanti, così la
         # barra pulsanti resta ancorata in fondo e sempre visibile anche su
         # schermi piccoli o con DPI alto; il form scorre se non ci sta.
@@ -2520,15 +3006,192 @@ class ADIFtoPDFApp(ctk.CTk):
                      font=ctk.CTkFont(size=11)).grid(row=0, column=0, sticky="w")
         ctk.CTkLabel(form, text=T("addqso_ora"), anchor="w",
                      font=ctk.CTkFont(size=11)).grid(row=0, column=1, sticky="w", padx=(8, 0))
-        e_data = ctk.CTkEntry(form, width=140)
-        e_data.grid(row=1, column=0, sticky="w", pady=(0, 2))
-        e_ora = ctk.CTkEntry(form, width=140)
-        e_ora.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(0, 2))
+        data_wrap = ctk.CTkFrame(form, fg_color="transparent")
+        data_wrap.grid(row=1, column=0, sticky="ew", pady=(0, 2))
+        e_data = ctk.CTkEntry(data_wrap, height=32)
+        e_data.pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(data_wrap, text="\U0001F4C5", width=36, height=32,
+                      command=lambda: _apri_calendario()).pack(side="left", padx=(4, 0))
 
-        live_var = _tk.BooleanVar(value=True)
-        ctk.CTkCheckBox(form, text=T("addqso_live"), variable=live_var,
-                         font=ctk.CTkFont(size=9), checkbox_width=16, checkbox_height=16
-                         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        def _apri_calendario():
+            import calendar as _cal
+            _MESI = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno",
+                     "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"]
+            _GIORNI = ["Lu", "Ma", "Me", "Gi", "Ve", "Sa", "Do"]
+            cur = e_data.get().strip()
+            try:
+                base = _dt.date(int(cur[0:4]), int(cur[4:6]), int(cur[6:8]))
+            except Exception:
+                base = _dt.date.today()
+            st = {"y": base.year, "m": base.month}
+
+            cal = ctk.CTkToplevel(dlg)
+            cal.title(T("cal_titolo"))
+            cal.transient(dlg); cal.resizable(False, False)
+            cal.attributes("-topmost", True)
+            try:
+                cal.geometry(f"+{dlg.winfo_rootx()+60}+{dlg.winfo_rooty()+130}")
+            except Exception:
+                pass
+            cont = ctk.CTkFrame(cal, fg_color="transparent"); cont.pack(padx=10, pady=10)
+            hdr = ctk.CTkFrame(cont, fg_color="transparent"); hdr.pack(fill="x", pady=(0, 6))
+            lbl_my = ctk.CTkLabel(hdr, text="", font=ctk.CTkFont(size=13, weight="bold"))
+            grid = ctk.CTkFrame(cont, fg_color="transparent")
+
+            def _scegli(d):
+                e_data.delete(0, "end"); e_data.insert(0, d.strftime("%Y%m%d"))
+                try: live_var.set(False)   # data scelta a mano: ferma l'orologio live
+                except Exception: pass
+                cal.destroy()
+
+            def _rid():
+                for w in grid.winfo_children():
+                    w.destroy()
+                lbl_my.configure(text=f"{_MESI[st['m']-1]} {st['y']}")
+                for i, gg in enumerate(_GIORNI):
+                    ctk.CTkLabel(grid, text=gg, width=34,
+                                 font=ctk.CTkFont(size=10, weight="bold"),
+                                 text_color="#8794a3").grid(row=0, column=i, padx=1, pady=1)
+                oggi = _dt.date.today()
+                for r, week in enumerate(_cal.Calendar(_cal.MONDAY).monthdayscalendar(st["y"], st["m"]), start=1):
+                    for c, day in enumerate(week):
+                        if day == 0:
+                            continue
+                        dd = _dt.date(st["y"], st["m"], day)
+                        oggi_flag = (dd == oggi)
+                        ctk.CTkButton(grid, text=str(day), width=34, height=28,
+                                      fg_color=("#2B6CB0" if oggi_flag else "transparent"),
+                                      hover_color="#245A8D",
+                                      command=lambda d=dd: _scegli(d)).grid(row=r, column=c, padx=1, pady=1)
+
+            def _prev():
+                st["m"] -= 1
+                if st["m"] < 1: st["m"] = 12; st["y"] -= 1
+                _rid()
+            def _next():
+                st["m"] += 1
+                if st["m"] > 12: st["m"] = 1; st["y"] += 1
+                _rid()
+
+            ctk.CTkButton(hdr, text="\u25C0", width=32, command=_prev).pack(side="left")
+            lbl_my.pack(side="left", expand=True)
+            ctk.CTkButton(hdr, text="\u25B6", width=32, command=_next).pack(side="right")
+            grid.pack()
+            foot = ctk.CTkFrame(cont, fg_color="transparent"); foot.pack(fill="x", pady=(6, 0))
+            ctk.CTkButton(foot, text=T("cal_oggi"), height=26,
+                          command=lambda: _scegli(_dt.date.today())).pack(side="left")
+            ctk.CTkButton(foot, text="\u2715", width=30, height=26,
+                          command=cal.destroy).pack(side="right")
+            _rid()
+            cal.after(300, lambda: cal.winfo_exists() and cal.attributes("-topmost", False))
+        e_ora = ctk.CTkEntry(form, width=220, height=32)
+        e_ora.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(0, 2))
+
+        # Modalità: Live (radio + orologio) oppure Manuale (ricopia da appunti)
+        _modo_iniziale = "live"
+        try:
+            _pf = self._carica_profili().get(self.profilo_attivo, {}) if self.profilo_attivo else {}
+            _mm = str(_pf.get("addqso_modo", "live")).lower()
+            if _mm.startswith("man"):
+                _modo_iniziale = "manuale"
+            elif _mm.startswith("con"):
+                _modo_iniziale = "contest"
+        except Exception:
+            pass
+        live_var = _tk.BooleanVar(value=(_modo_iniziale == "live"))
+        _modo_live = [_modo_iniziale]
+        _LBL_LIVE = T("aq_modo_live"); _LBL_MAN = T("aq_modo_manuale")
+        _LBL_CONTEST = T("aq_modo_contest")
+        _modo_seg_var = _tk.StringVar(
+            value=_LBL_MAN if _modo_iniziale == "manuale"
+            else _LBL_CONTEST if _modo_iniziale == "contest" else _LBL_LIVE)
+
+        def _applica_modo(scelta):
+            _modo_live[0] = ("manuale" if scelta == _LBL_MAN
+                             else "contest" if scelta == _LBL_CONTEST else "live")
+            m = _modo_live[0]
+            rc = getattr(dlg, "_radio_card", None)
+            cb = getattr(dlg, "_contest_bar", None)
+            if m == "manuale":
+                live_var.set(False)
+                try:
+                    e_data.delete(0, "end")
+                    e_data.insert(0, getattr(self, "_addqso_ultima_data", "")
+                                  or _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d"))
+                    e_ora.delete(0, "end")
+                    e_ora.insert(0, _dt.datetime.now(_dt.timezone.utc).strftime("%H%M%S"))
+                except Exception:
+                    pass
+                if rc is not None:
+                    try: rc.grid_remove()
+                    except Exception: pass
+                if cb is not None:
+                    try: cb.grid_remove()
+                    except Exception: pass
+            else:
+                live_var.set(True)
+                if rc is not None:
+                    try: rc.grid()
+                    except Exception: pass
+                if cb is not None:
+                    try:
+                        cb.grid() if m == "contest" else cb.grid_remove()
+                    except Exception: pass
+                lk = getattr(dlg, "_lk", None)
+                if lk is not None:
+                    try:
+                        lk.grid_remove() if m == "contest" else lk.grid()
+                    except Exception: pass
+                ch = getattr(dlg, "_ct_head", None)
+                if ch is not None:
+                    try:
+                        ch.pack(side="left", padx=(16, 0)) if m == "contest" else ch.pack_forget()
+                    except Exception: pass
+                if m == "contest":
+                    try: _contest_carica()
+                    except Exception: pass
+            try: _aggiorna_qso_before(e_call.get())
+            except Exception: pass
+
+        # init contest (usato dalla riga modalità e dalla barra contest)
+        _SC_SER = T("aq_ctst_seriale"); _SC_LOC = T("aq_ctst_locatore"); _SC_SL = T("aq_ctst_serloc")
+        _serial_iniz = 1; _ct_nome_iniz = ""; _ct_scambio_iniz = _SC_SER
+        try:
+            _pf2 = self._carica_profili().get(self.profilo_attivo, {}) if self.profilo_attivo else {}
+            _serial_iniz = int(_pf2.get("contest_serial", 1) or 1)
+            _ct_nome_iniz = str(_pf2.get("contest_id", "") or "")
+            _ct_scambio_iniz = str(_pf2.get("contest_scambio", _SC_SER) or _SC_SER)
+            _ct_fisso_iniz = str(_pf2.get("contest_fisso", "") or "")
+        except Exception:
+            pass
+        _serial = [max(1, _serial_iniz)]
+        try: _ct_fisso_iniz
+        except NameError: _ct_fisso_iniz = ""
+        _CONTEST_LIST = ["CQ-WW-CW", "CQ-WW-SSB", "CQ-WPX-CW", "CQ-WPX-SSB", "IARU-HF",
+                         "CQ-VHF", "ARRL-DX-CW", "ARRL-DX-SSB", "ARRL-10", "ARRL-160",
+                         "ARRL-SS-CW", "ARRL-SS-SSB", "EU-HF", "ARI-HF", "ARI-DX",
+                         "ITALIA-40-80", "GENERIC", "OTHER"]
+
+        mode_row = ctk.CTkFrame(form, fg_color="transparent")
+        mode_row.grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 12))
+        ctk.CTkSegmentedButton(mode_row, values=[_LBL_LIVE, _LBL_MAN, _LBL_CONTEST],
+                               variable=_modo_seg_var, command=_applica_modo,
+                               width=300, height=32, dynamic_resizing=False,
+                               font=ctk.CTkFont(size=12, weight="bold")).pack(side="left")
+        ct_head = ctk.CTkFrame(mode_row, fg_color="transparent")
+        ct_head.pack(side="left", padx=(16, 0))
+        dlg._ct_head = ct_head
+        ctk.CTkLabel(ct_head, text=T("aq_ctst_nome"),
+                     font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=(0, 4))
+        e_contest = ctk.CTkComboBox(ct_head, width=175, height=28, values=_CONTEST_LIST,
+                                    command=lambda v: (_contest_carica(),
+                                                       _aggiorna_qso_before(e_call.get())))
+        e_contest.pack(side="left", padx=(0, 12)); e_contest.set(_ct_nome_iniz or "")
+        ctk.CTkLabel(ct_head, text=T("aq_ctst_scambio"),
+                     font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=(0, 4))
+        var_scambio = _tk.StringVar(value=_ct_scambio_iniz)
+        ctk.CTkOptionMenu(ct_head, values=[_SC_SER, _SC_LOC, _SC_SL],
+                          variable=var_scambio, width=140, height=28).pack(side="left")
 
         _clock_job = [None]
         def _tick():
@@ -2541,6 +3204,20 @@ class ADIFtoPDFApp(ctk.CTk):
         def _on_close():
             if _clock_job[0]:
                 dlg.after_cancel(_clock_job[0])
+            self._aq_salva_geometria(dlg)
+            try:
+                if self.profilo_attivo:
+                    _pr = self._carica_profili()
+                    if self.profilo_attivo in _pr:
+                        _pr[self.profilo_attivo]["addqso_modo"] = _modo_live[0]
+                        _pr[self.profilo_attivo]["contest_id"] = e_contest.get().strip()
+                        _pr[self.profilo_attivo]["contest_serial"] = _serial[0]
+                        _pr[self.profilo_attivo]["contest_scambio"] = var_scambio.get()
+                        _pr[self.profilo_attivo]["contest_fisso"] = e_fisso.get().strip()
+                        with open(self.profili_path, "w", encoding="utf-8") as _f:
+                            json.dump(_pr, _f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
             dlg.destroy()
         dlg.protocol("WM_DELETE_WINDOW", _on_close)
         # Quando l'utente tocca a mano Data/Ora, ferma l'aggiornamento live
@@ -2552,18 +3229,245 @@ class ADIFtoPDFApp(ctk.CTk):
         ctk.CTkLabel(form, text=T("addqso_call"), anchor="w",
                      font=ctk.CTkFont(size=11)).grid(row=3, column=0, sticky="w")
         ctk.CTkLabel(form, text=T("addqso_country"), anchor="w",
-                     font=ctk.CTkFont(size=11)).grid(row=3, column=1, sticky="w", padx=(8, 0))
-        e_call = ctk.CTkEntry(form, width=140, placeholder_text=T("aq_ph_call"))
-        e_call.grid(row=4, column=0, sticky="w", pady=(0, 10))
-        e_country = ctk.CTkEntry(form, width=140, placeholder_text=T("aq_ph_country"))
-        e_country.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=(0, 10))
+                     font=ctk.CTkFont(size=11)).grid(row=3, column=2, sticky="w", padx=(14, 0))
+        e_call = ctk.CTkEntry(form, width=220, height=38, placeholder_text=T("aq_ph_call"), font=ctk.CTkFont(size=12, weight="bold"))
+        e_call.grid(row=4, column=0, sticky="ew", pady=(0, 3))
+        e_country = ctk.CTkEntry(form, width=220, height=34, placeholder_text=T("aq_ph_country"))
+        e_country.grid(row=4, column=2, sticky="ew", padx=(14, 0), pady=(0, 3))
+
+        # ── Pannello "QSO precedenti" (worked before), colonna a destra ──
+        qb_head = ctk.CTkFrame(qb_side, fg_color=("#2B6CB0", "#1F3A5F"), corner_radius=7)
+        qb_head.pack(fill="x", padx=8, pady=(10, 6))
+        qb_lbl = ctk.CTkLabel(qb_head, text=T("aq_b4_titolo"), anchor="w",
+                              font=ctk.CTkFont(size=13, weight="bold"), text_color="#eaf2fb")
+        qb_lbl.pack(fill="x", padx=10, pady=5)
+        qb_slot = ctk.CTkLabel(qb_side, text="", anchor="w", justify="left", wraplength=320,
+                               font=ctk.CTkFont(size=12, weight="bold"))
+        qb_slot.pack(fill="x", padx=10, pady=(0, 4))
+        qb_summary = ctk.CTkLabel(qb_side, text="", anchor="w", justify="left",
+                                  wraplength=320, font=ctk.CTkFont(size=11))
+        qb_summary.pack(fill="x", padx=10, pady=(0, 6))
+        qb_box = ctk.CTkTextbox(qb_side, fg_color="#0e1620",
+                                font=ctk.CTkFont(family="Consolas", size=11))
+        qb_box.pack(fill="both", expand=True, padx=8, pady=(0, 10))
+        qb_box.configure(state="disabled")
+        self._qb_rows = []
+
+        def _qb_click(ev):
+            try:
+                riga = int(str(qb_box.index("@%d,%d" % (ev.x, ev.y))).split(".")[0])
+                rows = getattr(self, "_qb_rows", [])
+                if 1 <= riga <= len(rows):
+                    q = rows[riga - 1]
+                    att = self._qsos_attivi()
+                    idx = next((i for i, x in enumerate(att) if x is q), None)
+                    if idx is None:
+                        idx = next((i for i, x in enumerate(self.qsos_caricati) if x is q), None)
+                    if idx is not None:
+                        self.apri_editor_qso(idx)
+            except Exception:
+                pass
+        # doppio clic su una riga = apri quel QSO in modifica (per controlli)
+        try:
+            qb_box._textbox.bind("<Double-Button-1>", _qb_click)
+            qb_box._textbox.configure(cursor="hand2")
+        except Exception:
+            qb_box.bind("<Double-Button-1>", _qb_click)
+
+        def _call_base(c):
+            c = (c or "").upper().strip()
+            if "/" in c:
+                parti = [p for p in c.split("/") if any(ch.isdigit() for ch in p)]
+                if parti:
+                    return max(parti, key=len)
+            return c
+
+        def _contest_panel(call):
+            """In Contest: mostra il LOG della sessione (progressivo) + dupe stazione."""
+            call = (call or "").strip().upper()
+            stream = list(getattr(self, "_contest_qsos", []))
+            stream.sort(key=lambda q: (self._get_campo_qso(q, "qso_date"),
+                                       self._get_campo_qso(q, "time_on")))
+            try:
+                cur_b = var_banda.get().lower().strip(); cur_m = var_modo.get().upper().strip()
+            except Exception:
+                cur_b = cur_m = ""
+            base = _call_base(call)
+            dupe = False
+            if len(call) >= 3:
+                for q in stream:
+                    c = self._get_campo_qso(q, "call").upper()
+                    if (c == call or _call_base(c) == base) and \
+                       self._get_campo_qso(q, "band").lower().strip() == cur_b and \
+                       self._get_campo_qso(q, "mode").upper().strip() == cur_m:
+                        dupe = True; break
+            if dupe:
+                qb_slot.configure(text=T("aq_b4_dupe", b=cur_b.upper(), m=cur_m),
+                                  text_color="#ffffff", fg_color="#C53030", corner_radius=6)
+            elif len(call) >= 3 and cur_b and cur_m:
+                qb_slot.configure(text=T("aq_b4_slot_nuovo", b=cur_b.upper(), m=cur_m),
+                                  text_color="#48BB78", fg_color="transparent")
+            else:
+                qb_slot.configure(text="", fg_color="transparent")
+            try:
+                qb_box.configure(state="normal"); qb_box.delete("1.0", "end")
+                self._qb_rows = []
+                qb_lbl.configure(text=T("aq_ctst_log_n", n=len(stream)), text_color="#F6AD55")
+                qb_summary.configure(text="")
+                for i, q in enumerate(stream, 1):
+                    cc = self._get_campo_qso(q, "call").upper()
+                    rs = self._get_campo_qso(q, "rst_sent") or "59"
+                    tx = self._get_campo_qso(q, "stx")
+                    rr = self._get_campo_qso(q, "rst_rcvd") or "59"
+                    rx = self._get_campo_qso(q, "srx") or self._get_campo_qso(q, "gridsquare")
+                    inviato = (rs + " " + tx).strip()
+                    ricev = (rr + " " + rx).strip()
+                    riga = f"{i:>3} {cc:<9} {inviato:<9} {ricev}"
+                    qb_box.insert("end", riga + "\n")
+                    self._qb_rows.append(q)
+                qb_box.see("end")
+                qb_box.configure(state="disabled")
+            except Exception:
+                try: qb_box.configure(state="disabled")
+                except Exception: pass
+
+        def _aggiorna_qso_before(call):
+            if _modo_live[0] == "contest":
+                _contest_panel(call); return
+            call = (call or "").strip().upper()
+            try:
+                qb_box.configure(state="normal")
+                qb_box.delete("1.0", "end")
+                if len(call) < 3:
+                    self._qb_rows = []
+                    qb_lbl.configure(text=T("aq_b4_titolo"), text_color="#8794a3")
+                    qb_slot.configure(text="", fg_color="transparent")
+                    qb_box.configure(state="disabled"); return
+                base = _call_base(call)
+                # In Contest il dupe/worked-before vale solo per la sessione
+                # corrente (stesso contest_id); altrimenti su tutto il log.
+                _ct_now = ""
+                if _modo_live[0] == "contest":
+                    try: _ct_now = e_contest.get().strip().upper()
+                    except Exception: _ct_now = ""
+                trovati = []
+                for q in self.qsos_caricati:
+                    c = self._get_campo_qso(q, "call").upper()
+                    if not (c and (c == call or _call_base(c) == base)):
+                        continue
+                    if _ct_now and self._get_campo_qso(q, "contest_id").strip().upper() != _ct_now:
+                        continue
+                    trovati.append(q)
+                trovati.sort(key=lambda q: (self._get_campo_qso(q, "qso_date"),
+                                            self._get_campo_qso(q, "time_on")), reverse=True)
+                if not trovati:
+                    self._qb_rows = []
+                    qb_lbl.configure(text=T("aq_b4_nuovo"), text_color="#eaf2fb")
+                    qb_summary.configure(text="")
+                    qb_slot.configure(text="", fg_color="transparent")
+                else:
+                    qb_lbl.configure(text=T("aq_b4_titolo_n", n=len(trovati)), text_color="#F6AD55")
+                    _ordine_b = ["160m","80m","60m","40m","30m","20m","17m","15m","12m","10m","6m","2m","70cm","23cm"]
+                    _bset, _mset = set(), set()
+                    for q in trovati:
+                        bb = self._get_campo_qso(q, "band").lower().strip()
+                        mm = self._get_campo_qso(q, "mode").upper().strip()
+                        if bb: _bset.add(bb)
+                        if mm: _mset.add(mm)
+                    _bande = [b for b in _ordine_b if b in _bset] + sorted(_bset - set(_ordine_b))
+                    _modi = sorted(_mset)
+                    qb_summary.configure(
+                        text=f"{T('aq_b4_bande')} " + (", ".join(_bande) or "—") + "\n"
+                             f"{T('aq_b4_modi')} " + (", ".join(_modi) or "—"),
+                        text_color="#5EA0E0")
+                    # DUPE / slot: controllo la combinazione ESATTA banda+modo
+                    _pairs = {(self._get_campo_qso(q, "band").lower().strip(),
+                               self._get_campo_qso(q, "mode").upper().strip()) for q in trovati}
+                    try:
+                        cur_b = var_banda.get().lower().strip()
+                        cur_m = var_modo.get().upper().strip()
+                    except Exception:
+                        cur_b = cur_m = ""
+                    if cur_b and cur_m and (cur_b, cur_m) in _pairs:
+                        qb_slot.configure(text=T("aq_b4_dupe", b=cur_b.upper(), m=cur_m),
+                                          text_color="#ffffff", fg_color="#C53030",
+                                          corner_radius=6)
+                    elif cur_b and cur_m:
+                        extra = []
+                        if cur_b not in _bset:
+                            extra.append(T("aq_b4_banda_nuova", b=cur_b))
+                        if cur_m not in _mset:
+                            extra.append(T("aq_b4_modo_nuovo", m=cur_m))
+                        base = T("aq_b4_slot_nuovo", b=cur_b.upper(), m=cur_m)
+                        qb_slot.configure(text=base + ("   " + "  ".join(extra) if extra else ""),
+                                          text_color="#48BB78", fg_color="transparent")
+                    else:
+                        qb_slot.configure(text="", fg_color="transparent")
+                    self._qb_rows = []
+                    for q in trovati[:15]:
+                        d = self._get_campo_qso(q, "qso_date")
+                        dd = f"{d[6:8]}/{d[4:6]}/{d[2:4]}" if len(d) == 8 else d
+                        b = self._get_campo_qso(q, "band")
+                        m = self._get_campo_qso(q, "mode")
+                        rs = self._get_campo_qso(q, "rst_sent") or "--"
+                        rr = self._get_campo_qso(q, "rst_rcvd") or "--"
+                        conf = ""
+                        _lw  = self._get_campo_qso(q, "lotw_qsl_rcvd").upper().strip()
+                        _lwd = self._get_campo_qso(q, "lotw_qslrdate").strip()
+                        _eq  = self._get_campo_qso(q, "eqsl_qsl_rcvd").upper().strip()
+                        _eqd = self._get_campo_qso(q, "eqsl_qslrdate").strip()
+                        if _lw in ("Y", "V") or (not _lw and _lwd and _lwd != "00000000"):
+                            conf += "[LoTW]"
+                        if _eq == "Y" or (not _eq and _eqd and _eqd != "00000000"):
+                            conf += "[eQSL]"
+                        if self._get_campo_qso(q, "qsl_rcvd").upper().strip() == "Y":
+                            conf += "[QSL]"
+                        riga = f"{dd}  {b:<4} {m:<5} {rs}/{rr}"
+                        if conf:
+                            riga += "  " + conf
+                        qb_box.insert("end", riga + "\n")
+                        self._qb_rows.append(q)
+                qb_box.configure(state="disabled")
+            except Exception:
+                try: qb_box.configure(state="disabled")
+                except Exception: pass
 
         _country_auto = [True]  # diventa False appena l'utente modifica Country a mano
         def _su_country_edit(*_a):
             _country_auto[0] = False
         e_country.bind("<Key>", _su_country_edit)
 
+        def _zone_da_paese(nome):
+            """CQ/ITU zone dell'entità DXCC dal nome del Paese (zona principale)."""
+            try:
+                from utils.dxcc_countries import DXCC_ENTITIES
+                nome = (nome or "").strip()
+                if not nome:
+                    return "", ""
+                ent = DXCC_ENTITIES.get(nome)
+                if not ent:
+                    low = nome.lower()
+                    for k, v in DXCC_ENTITIES.items():
+                        if k.lower() == low:
+                            ent = v; break
+                if ent and len(ent) >= 4:
+                    return (ent[2] or ""), (ent[3] or "")
+            except Exception:
+                pass
+            return "", ""
+
+        def _riempi_zone(country):
+            cqz, ituz = _zone_da_paese(country)
+            try:
+                if cqz and not e_cqz.get().strip():
+                    e_cqz.delete(0, "end"); e_cqz.insert(0, cqz)
+                if ituz and not e_ituz.get().strip():
+                    e_ituz.delete(0, "end"); e_ituz.insert(0, ituz)
+            except Exception:
+                pass
+
         def _su_cambio_call(*_a):
+            _aggiorna_qso_before(e_call.get())
             if not _country_auto[0]:
                 return  # l'utente ha già personalizzato il Country, non sovrascrivere
             call_attuale = e_call.get().strip()
@@ -2572,32 +3476,35 @@ class ADIFtoPDFApp(ctk.CTk):
                 country, _dxcc_code, _cont = risultato
                 e_country.delete(0, 'end'); e_country.insert(0, country)
                 _country_auto[0] = True  # resta "auto" finché l'utente non la tocca
+                _riempi_zone(country)
         e_call.bind("<KeyRelease>", _su_cambio_call)
         e_call.bind("<FocusOut>", _su_cambio_call)
 
         # ── Banda / Frequenza ────────────────────────
         ctk.CTkLabel(form, text=T("addqso_banda"), anchor="w",
-                     font=ctk.CTkFont(size=11)).grid(row=5, column=0, sticky="w")
+                     font=ctk.CTkFont(size=11)).grid(row=6, column=0, sticky="w")
         ctk.CTkLabel(form, text=T("addqso_freq"), anchor="w",
-                     font=ctk.CTkFont(size=11)).grid(row=5, column=1, sticky="w", padx=(8, 0))
+                     font=ctk.CTkFont(size=11)).grid(row=6, column=1, sticky="w", padx=(8, 0))
         var_banda = _tk.StringVar(value=self._addqso_ultimi['banda'])
         def _su_cambio_banda(*_a):
+            try: _aggiorna_qso_before(e_call.get())
+            except Exception: pass
             nuova = self._freq_da_banda(var_banda.get())
             if nuova:
                 e_freq.delete(0, 'end'); e_freq.insert(0, nuova)
-        cb_banda = ctk.CTkOptionMenu(form, values=BANDE, variable=var_banda, width=140,
+        cb_banda = ctk.CTkOptionMenu(form, values=BANDE, variable=var_banda, width=220, height=34,
                                       command=_su_cambio_banda)
-        cb_banda.grid(row=6, column=0, sticky="w", pady=(0, 10))
-        e_freq = ctk.CTkEntry(form, width=140)
-        e_freq.grid(row=6, column=1, sticky="w", padx=(8, 0), pady=(0, 10))
+        cb_banda.grid(row=7, column=0, sticky="ew", pady=(0, 3))
+        e_freq = ctk.CTkEntry(form, width=220, height=34)
+        e_freq.grid(row=7, column=1, sticky="ew", padx=(8, 0), pady=(0, 3))
         freq_iniziale = self._addqso_ultimi['freq'] or self._freq_da_banda(self._addqso_ultimi['banda'])
         e_freq.insert(0, freq_iniziale)
 
         # ── Modo / Satellite ─────────────────────────
         ctk.CTkLabel(form, text=T("addqso_modo"), anchor="w",
-                     font=ctk.CTkFont(size=11)).grid(row=7, column=0, sticky="w")
+                     font=ctk.CTkFont(size=11)).grid(row=8, column=0, sticky="w")
         ctk.CTkLabel(form, text=T("addqso_satellite"), anchor="w",
-                     font=ctk.CTkFont(size=11)).grid(row=7, column=1, sticky="w", padx=(8, 0))
+                     font=ctk.CTkFont(size=11)).grid(row=8, column=1, sticky="w", padx=(8, 0))
         var_modo = _tk.StringVar(value=self._addqso_ultimi['modo'])
         # Esponi i campi come attributi del dialog (per precompilazione da DX Cluster)
         dlg._aq_call    = e_call
@@ -2606,21 +3513,33 @@ class ADIFtoPDFApp(ctk.CTk):
         dlg._aq_var_banda = var_banda
         dlg._aq_var_modo  = var_modo
         def _su_cambio_modo(*_a):
+            try: _aggiorna_qso_before(e_call.get())
+            except Exception: pass
             tx, rx = RST_DEFAULT.get(var_modo.get().upper(), ('59', '59'))
             e_rst_tx.delete(0, 'end'); e_rst_tx.insert(0, tx)
             e_rst_rx.delete(0, 'end'); e_rst_rx.insert(0, rx)
-        cb_modo = ctk.CTkOptionMenu(form, values=MODI, variable=var_modo, width=140,
+        cb_modo = ctk.CTkOptionMenu(form, values=MODI, variable=var_modo, width=165, height=32,
                                      command=_su_cambio_modo)
-        cb_modo.grid(row=8, column=0, sticky="w", pady=(0, 10))
-        e_sat = ctk.CTkEntry(form, width=140, placeholder_text=T("aq_ph_sat"))
-        e_sat.grid(row=8, column=1, sticky="w", padx=(8, 0), pady=(0, 10))
+        cb_modo.grid(row=9, column=0, sticky="ew", pady=(0, 3))
+        e_sat = ctk.CTkEntry(form, width=220, height=34, placeholder_text=T("aq_ph_sat"))
+        e_sat.grid(row=9, column=1, sticky="ew", padx=(8, 0), pady=(0, 3))
         e_sat.insert(0, self._addqso_ultimi['sat'])
 
         sat_status_var = _tk.StringVar(value="")
         lbl_sat_status = ctk.CTkLabel(form, textvariable=sat_status_var,
                                        font=ctk.CTkFont(size=9), justify="left",
                                        wraplength=140, anchor="w")
-        lbl_sat_status.grid(row=9, column=1, sticky="nw", padx=(8, 0), pady=(0, 6))
+        lbl_sat_status.grid(row=10, column=1, sticky="nw", padx=(8, 0), pady=(0, 6))
+        def _sat_status_vis(*_a):
+            try:
+                if sat_status_var.get().strip():
+                    lbl_sat_status.grid()
+                else:
+                    lbl_sat_status.grid_remove()
+            except Exception:
+                pass
+        sat_status_var.trace_add("write", _sat_status_vis)
+        lbl_sat_status.grid_remove()   # nascosta finché non c'è uno stato satellite
 
         # Espone il campo Satellite per la precompilazione dal cruscotto tracking
         dlg._aq_sat = e_sat
@@ -2631,22 +3550,31 @@ class ADIFtoPDFApp(ctk.CTk):
         # se il satellite non è riconosciuto. Per i QSO non satellitari
         # restano semplicemente vuoti (e non vengono scritti).
         var_banda_rx = _tk.StringVar(value='')
-        ctk.CTkLabel(form, text=T("aq_sat_rx_hdr"), anchor="w",
-                     font=ctk.CTkFont(size=10, weight="bold"),
-                     text_color="#4A90D9").grid(row=14, column=0, columnspan=2,
-                                                sticky="w", pady=(6, 2))
-        ctk.CTkLabel(form, text=T("aq_sat_rx_banda"), anchor="w",
-                     font=ctk.CTkFont(size=11)).grid(row=15, column=0, sticky="w")
-        ctk.CTkLabel(form, text=T("aq_sat_rx_freq"), anchor="w",
-                     font=ctk.CTkFont(size=11)).grid(row=15, column=1, sticky="w", padx=(8, 0))
-        cb_banda_rx = ctk.CTkOptionMenu(form, values=BANDE, variable=var_banda_rx, width=140)
-        cb_banda_rx.grid(row=16, column=0, sticky="w", pady=(0, 6))
-        e_freq_rx = ctk.CTkEntry(form, width=140, placeholder_text="—")
-        e_freq_rx.grid(row=16, column=1, sticky="w", padx=(8, 0), pady=(0, 6))
-        ctk.CTkLabel(form, text=T("aq_sat_mode"), anchor="w",
-                     font=ctk.CTkFont(size=11)).grid(row=17, column=0, sticky="w")
-        e_sat_mode = ctk.CTkEntry(form, width=140, placeholder_text="V/U")
-        e_sat_mode.grid(row=18, column=0, sticky="w", pady=(0, 10))
+        _rxw = []
+        def _rxadd(w, **g):
+            _rxw.append((w, g)); return w
+        _rxadd(ctk.CTkLabel(form, text=T("aq_sat_rx_hdr"), anchor="w",
+                     font=ctk.CTkFont(size=10, weight="bold"), text_color="#4A90D9"),
+               row=15, column=2, columnspan=2, sticky="w", pady=(6, 2))
+        _rxadd(ctk.CTkLabel(form, text=T("aq_sat_rx_banda"), anchor="w",
+                     font=ctk.CTkFont(size=11)), row=16, column=2, sticky="w")
+        _rxadd(ctk.CTkLabel(form, text=T("aq_sat_rx_freq"), anchor="w",
+                     font=ctk.CTkFont(size=11)), row=16, column=3, sticky="w", padx=(8, 0))
+        cb_banda_rx = _rxadd(ctk.CTkOptionMenu(form, values=BANDE, variable=var_banda_rx, width=140),
+                     row=17, column=2, sticky="ew", pady=(0, 6))
+        e_freq_rx = _rxadd(ctk.CTkEntry(form, width=140, placeholder_text="—"),
+                     row=17, column=3, sticky="ew", padx=(8, 0), pady=(0, 6))
+        _rxadd(ctk.CTkLabel(form, text=T("aq_sat_mode"), anchor="w",
+                     font=ctk.CTkFont(size=11)), row=18, column=2, sticky="w")
+        e_sat_mode = _rxadd(ctk.CTkEntry(form, width=140, placeholder_text="V/U"),
+                     row=19, column=2, sticky="ew", pady=(0, 3))
+        def _mostra_rx(show):
+            for _w, _g in _rxw:
+                if show:
+                    _w.grid(**_g)
+                else:
+                    _w.grid_remove()
+        _mostra_rx(False)   # nascosta finché non c'è un satellite con dati RX
 
         def _pulisci_rx():
             var_banda_rx.set('')
@@ -2663,7 +3591,7 @@ class ADIFtoPDFApp(ctk.CTk):
             if not sat_raw:
                 sat_status_var.set("")
                 lbl_sat_status.configure(text_color="gray")
-                _pulisci_rx()
+                _pulisci_rx(); _mostra_rx(False)
                 return
             # Riconosce e normalizza varianti scritte senza spazi/trattini
             # per qualunque satellite noto (es. 'rs44' -> 'RS-44'), e le
@@ -2683,7 +3611,7 @@ class ADIFtoPDFApp(ctk.CTk):
                     var_banda.set(dati['up_band'])
                     e_freq.delete(0, 'end'); e_freq.insert(0, dati['up_freq'])
                 # RX (downlink) + SAT_MODE: sempre riallineati al satellite
-                _riempi_rx(dati)
+                _riempi_rx(dati); _mostra_rx(True)
                 sat_status_var.set(f"✓ {sat_upper} · {dati['mode']} · {dati['tipo']}")
                 lbl_sat_status.configure(text_color=TH.OK_TEXT)
                 return
@@ -2698,11 +3626,11 @@ class ADIFtoPDFApp(ctk.CTk):
                     freq_tipica = self._freq_da_banda(banda_tipica)
                     if freq_tipica:
                         e_freq.delete(0, 'end'); e_freq.insert(0, freq_tipica)
-                _pulisci_rx()
+                _pulisci_rx(); _mostra_rx(False)
             else:
                 sat_status_var.set(T("addqso_sat_sconosciuto"))
                 lbl_sat_status.configure(text_color=TH.WARN_TEXT)
-                _pulisci_rx()
+                _pulisci_rx(); _mostra_rx(False)
         e_sat.bind("<KeyRelease>", _verifica_satellite)
         e_sat.bind("<FocusOut>", _verifica_satellite)
         # Espone il verificatore per la precompilazione dal cruscotto tracking
@@ -2712,20 +3640,365 @@ class ADIFtoPDFApp(ctk.CTk):
 
         # ── RST TX/RX (auto da modo, modificabile) ───
         ctk.CTkLabel(form, text=T("addqso_rst_tx"), anchor="w",
-                     font=ctk.CTkFont(size=11)).grid(row=10, column=0, sticky="w")
+                     font=ctk.CTkFont(size=11)).grid(row=11, column=0, sticky="w")
         ctk.CTkLabel(form, text=T("addqso_rst_rx"), anchor="w",
-                     font=ctk.CTkFont(size=11)).grid(row=10, column=1, sticky="w", padx=(8, 0))
-        e_rst_tx = ctk.CTkEntry(form, width=140)
-        e_rst_tx.grid(row=11, column=0, sticky="w", pady=(0, 10))
-        e_rst_rx = ctk.CTkEntry(form, width=140)
-        e_rst_rx.grid(row=11, column=1, sticky="w", padx=(8, 0), pady=(0, 10))
+                     font=ctk.CTkFont(size=11)).grid(row=11, column=1, sticky="w", padx=(8, 0))
+        e_rst_tx = ctk.CTkEntry(form, width=220, height=34)
+        e_rst_tx.grid(row=12, column=0, sticky="ew", pady=(0, 3))
+        e_rst_rx = ctk.CTkEntry(form, width=220, height=34)
+        e_rst_rx.grid(row=12, column=1, sticky="ew", padx=(8, 0), pady=(0, 3))
         _su_cambio_modo()  # precompila subito all'apertura
 
         # ── Locator ──────────────────────────────────
+        # Affiancato al Country: mantiene la parte alta della finestra
+        # compatta e rende più immediata la compilazione della stazione.
         ctk.CTkLabel(form, text=T("addqso_locator"), anchor="w",
-                     font=ctk.CTkFont(size=11)).grid(row=12, column=0, sticky="w")
-        e_loc = ctk.CTkEntry(form, width=290, placeholder_text=T("aq_ph_loc"))
-        e_loc.grid(row=13, column=0, columnspan=2, sticky="w", pady=(0, 14))
+                     font=ctk.CTkFont(size=11)).grid(row=3, column=3, sticky="w", padx=(8, 0))
+        e_loc = ctk.CTkEntry(form, width=220, height=34, placeholder_text=T("aq_ph_loc"))
+        e_loc.grid(row=4, column=3, sticky="ew", padx=(8, 0), pady=(0, 3))
+
+        # ── CONSOLE RADIO / VFO ─────────────────────────────────────────
+        # Console stile logger: mostra lo stato reale della radio quando CAT
+        # è disponibile, mantenendo comunque i valori del QSO al centro.
+        radio_card = ctk.CTkFrame(form, fg_color=("#EAF4FF", "#101923"), corner_radius=8,
+                                  border_width=1, border_color=("#B9D5EE", "#29465E"), height=36)
+        radio_card.grid(row=13, column=0, columnspan=4, sticky="ew", padx=0, pady=(8, 6))
+        radio_card.grid_propagate(False)
+        dlg._radio_card = radio_card
+
+        # ── Barra CONTEST: scambio del QSO (RST fissi/auto, solo progressivi) ──
+        contest_bar = ctk.CTkFrame(form, fg_color=("#FFF3E0", "#2A2113"), corner_radius=8,
+                                   border_width=1, border_color=("#F0C98A", "#5A4A2A"), height=42)
+        contest_bar.grid(row=5, column=0, columnspan=4, sticky="ew", padx=0, pady=(4, 6))
+        contest_bar.grid_propagate(False)
+        dlg._contest_bar = contest_bar
+
+        def _ct_show():
+            try: e_stx.delete(0, "end"); e_stx.insert(0, f"{_serial[0]:03d}")
+            except Exception: pass
+        def _ct_reset():
+            _serial[0] = 1; _ct_show()
+        def _ct_meno():
+            _serial[0] = max(1, _serial[0] - 1); _ct_show()
+
+        ctk.CTkLabel(contest_bar, text="RX", font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=("#2B6CB0", "#63B3ED")).pack(side="left", padx=(12, 3), pady=6)
+        ctk.CTkLabel(contest_bar, text="Nr", font=ctk.CTkFont(size=10),
+                     text_color=("#718096", "#8794a3")).pack(side="left", padx=(0, 3))
+        e_srx = ctk.CTkEntry(contest_bar, width=80, height=28)
+        e_srx.pack(side="left", padx=(0, 18))
+
+        ctk.CTkLabel(contest_bar, text="TX", font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=("#2F855A", "#68D391")).pack(side="left", padx=(0, 3))
+        ctk.CTkLabel(contest_bar, text="Nr", font=ctk.CTkFont(size=10),
+                     text_color=("#718096", "#8794a3")).pack(side="left", padx=(0, 3))
+        e_stx = ctk.CTkEntry(contest_bar, width=64, height=28,
+                             font=ctk.CTkFont(family="Consolas", size=13, weight="bold"))
+        e_stx.pack(side="left", padx=(0, 12))
+        _ct_show()
+
+        ctk.CTkLabel(contest_bar, text=T("aq_ctst_fisso"),
+                     font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color=("#B7791F", "#F6AD55")).pack(side="left", padx=(0, 3))
+        e_fisso = ctk.CTkEntry(contest_bar, width=70, height=28)
+        e_fisso.pack(side="left", padx=(0, 12)); e_fisso.insert(0, _ct_fisso_iniz)
+
+        ctk.CTkButton(contest_bar, text=T("aq_ctst_log"), height=30, width=96,
+                      font=ctk.CTkFont(size=12, weight="bold"),
+                      fg_color="#2F855A", hover_color="#276749",
+                      command=lambda: inserisci()).pack(side="left", padx=(2, 12))
+
+        ctk.CTkButton(contest_bar, text=T("aq_ctst_cbr"), height=28, width=100,
+                      font=ctk.CTkFont(size=11, weight="bold"),
+                      fg_color="#2B6CB0", hover_color="#1F5A93",
+                      command=lambda: self.esporta_cabrillo_standalone(
+                          qsos=list(self._contest_qsos))).pack(side="right", padx=(0, 6))
+        ctk.CTkButton(contest_bar, text=T("aq_ctst_sr"), height=28, width=92,
+                      font=ctk.CTkFont(size=11, weight="bold"),
+                      fg_color="#4A5568", hover_color="#2D3748",
+                      command=lambda: _contest_salva_reset()).pack(side="right", padx=(0, 6))
+        ctk.CTkButton(contest_bar, text=T("aq_ctst_fine"), height=28, width=90,
+                      font=ctk.CTkFont(size=11, weight="bold"),
+                      fg_color="#B7791F", hover_color="#975A16",
+                      command=lambda: _contest_importa()).pack(side="right", padx=(0, 6))
+        ctk.CTkButton(contest_bar, text="\u22121", width=36, height=28,
+                      command=_ct_meno).pack(side="right", padx=(0, 4))
+        ctk.CTkButton(contest_bar, text=T("aq_ctst_reset"), width=56, height=28,
+                      command=_ct_reset).pack(side="right", padx=(0, 4))
+
+        # ── Sessione contest su file .adi separato (salvataggio continuo) ──
+        self._contest_qsos = []
+
+        def _contest_file_path():
+            nome = e_contest.get().strip()
+            if not nome:
+                return None
+            call = (self.entry_owner.get().strip().upper() or "NOCALL")
+            safe = "".join(ch if (ch.isalnum() or ch in " _-") else "_" for ch in nome).strip().replace(" ", "_")
+            return os.path.join(self._cartella_backup(), f"contest_{safe}_{call}.adi")
+
+        def _contest_carica():
+            self._contest_qsos = []
+            path = _contest_file_path()
+            if path and os.path.exists(path):
+                try:
+                    qs, _h = adif_io.read_from_string(open(path, encoding="utf-8").read())
+                    self._contest_qsos = [adif_io.QSO({str(k).lower(): v
+                                          for k, v in dict(q).items()}) for q in qs]
+                except Exception:
+                    self._contest_qsos = []
+
+        def _contest_salva():
+            path = _contest_file_path()
+            if path:
+                try: self._scrivi_adif(path, self._contest_qsos)
+                except Exception: pass
+
+        def _contest_importa():
+            if not self._contest_qsos:
+                messagebox.showinfo(T("aq_ctst_fine_titolo"), T("aq_ctst_fine_vuoto"), parent=dlg)
+                return
+            if not messagebox.askyesno(T("aq_ctst_fine_titolo"),
+                                       T("aq_ctst_fine_chiedi", n=len(self._contest_qsos)), parent=dlg):
+                return
+            esist = {(self._get_campo_qso(q, "call").upper(), self._get_campo_qso(q, "qso_date"),
+                      self._get_campo_qso(q, "time_on"), self._get_campo_qso(q, "band").lower())
+                     for q in self.qsos_caricati}
+            n_add = 0
+            for q in self._contest_qsos:
+                key = (self._get_campo_qso(q, "call").upper(), self._get_campo_qso(q, "qso_date"),
+                       self._get_campo_qso(q, "time_on"), self._get_campo_qso(q, "band").lower())
+                if key in esist:
+                    continue
+                self.qsos_caricati.append(q); esist.add(key); n_add += 1
+                if self.qsos_filtrati:
+                    self.qsos_filtrati.append(q)
+            if n_add:
+                self._log_modificato = True
+                self._aggiorna_tree()
+            messagebox.showinfo(T("aq_ctst_fine_titolo"), T("aq_ctst_fine_ok", n=n_add), parent=dlg)
+
+        def _contest_salva_reset():
+            if not self._contest_qsos:
+                messagebox.showinfo(T("aq_ctst_sr_titolo"), T("aq_ctst_fine_vuoto"), parent=dlg)
+                return
+            from tkinter import filedialog
+            nome = e_contest.get().strip() or "contest"
+            call = (self.entry_owner.get().strip().upper() or "NOCALL")
+            safe = "".join(ch if (ch.isalnum() or ch in " _-") else "_" for ch in nome).strip().replace(" ", "_")
+            path = filedialog.asksaveasfilename(
+                parent=dlg, defaultextension=".adi",
+                initialfile=f"contest_{safe}_{call}.adi",
+                filetypes=[("ADIF", "*.adi *.adif"), ("Tutti i file", "*.*")])
+            if not path:
+                return
+            try:
+                self._scrivi_adif(path, self._contest_qsos)
+            except Exception as _e:
+                messagebox.showerror(T("aq_ctst_sr_titolo"), str(_e), parent=dlg)
+                return
+            if not messagebox.askyesno(T("aq_ctst_sr_titolo"), T("aq_ctst_sr_reset"), parent=dlg):
+                messagebox.showinfo(T("aq_ctst_sr_titolo"), T("aq_ctst_sr_salvato"), parent=dlg)
+                return
+            # Reset sessione: svuota QSO, serial a 001, campi puliti, rimuove il file di lavoro
+            bk = _contest_file_path()
+            if bk and os.path.exists(bk):
+                try: os.remove(bk)
+                except Exception: pass
+            self._contest_qsos = []
+            _serial[0] = 1; _ct_show()
+            try:
+                e_srx.delete(0, "end"); e_call.delete(0, "end")
+                e_country.delete(0, "end"); e_loc.delete(0, "end")
+            except Exception: pass
+            _aggiorna_qso_before("")
+            messagebox.showinfo(T("aq_ctst_sr_titolo"), T("aq_ctst_sr_ok"), parent=dlg)
+
+        _contest_carica()
+        e_contest.bind("<FocusOut>", lambda e: (_contest_carica(), _aggiorna_qso_before(e_call.get())))
+        contest_bar.grid_remove()
+
+        _radio_cat  = _tk.StringVar(value="CAT: standby")
+        _radio_vfoa = _tk.StringVar(value=e_freq.get().strip() or "—")
+        _radio_vfob = _tk.StringVar(value="")
+        _radio_mode = _tk.StringVar(value=var_modo.get().strip().upper() or "—")
+        _radio_band = _tk.StringVar(value=var_banda.get().strip().upper() or "—")
+        _radio_split = _tk.StringVar(value="")
+        _radio_live = [False]
+
+        # Striscia radio compatta (una riga): 📻 CAT · freq · banda · modo · split · ↻
+        ctk.CTkLabel(radio_card, text="📻", font=ctk.CTkFont(size=13)).pack(side="left", padx=(10, 6))
+        ctk.CTkLabel(radio_card, textvariable=_radio_cat,
+                     font=ctk.CTkFont(size=10, weight="bold"),
+                     text_color=("#64748B", "#7F9AAF")).pack(side="left", padx=(0, 12))
+        ctk.CTkLabel(radio_card, textvariable=_radio_vfoa,
+                     font=ctk.CTkFont(family="Consolas", size=14, weight="bold"),
+                     text_color=("#17324D", "#E7F4FF")).pack(side="left", padx=(0, 10))
+        ctk.CTkLabel(radio_card, textvariable=_radio_band,
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=("#1A4F7A", "#7CC7FF")).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(radio_card, textvariable=_radio_mode,
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=("#1A4F7A", "#7CC7FF")).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(radio_card, textvariable=_radio_split,
+                     font=ctk.CTkFont(size=10, weight="bold"),
+                     text_color="#DD6B20").pack(side="left", padx=(0, 8))
+        ctk.CTkButton(radio_card, text="↻", width=30, height=24,
+                      command=lambda: _leggi_da_radio(),
+                      font=ctk.CTkFont(size=13, weight="bold"),
+                      fg_color=("#2B6CB0", "#245A8D"), hover_color=("#1F5A93", "#1B466F")
+                      ).pack(side="right", padx=(4, 8))
+
+        def _radio_sync_form(*_):
+            _radio_band.set(var_banda.get().strip().upper() or "—")
+            _radio_mode.set(var_modo.get().strip().upper() or "—")
+            _radio_vfoa.set(e_freq.get().strip() or "—.—————")
+        try:
+            var_banda.trace_add("write", _radio_sync_form)
+            var_modo.trace_add("write", _radio_sync_form)
+        except Exception:
+            pass
+        for _e in (e_freq, e_rst_tx, e_rst_rx):
+            _e.bind("<KeyRelease>", _radio_sync_form, add="+")
+
+        _last_radio_key = [None]
+        def _radio_poll():
+            if not dlg.winfo_exists():
+                return
+            rig = getattr(self, "_omnirig", None)
+            try:
+                if rig is not None and rig.disponibile():
+                    fa, fb = rig.get_freq_ab()
+                    ma = rig.get_modo() or ""
+                    if fa:
+                        mhz = fa / 1_000_000
+                        _radio_vfoa.set(f"{mhz:.6f}".rstrip("0").rstrip("."))
+                        band = self._banda_da_freq(mhz) or ""
+                        if band:
+                            _radio_band.set(band.upper())
+                        if ma:
+                            _radio_mode.set(ma.upper())
+                        _rk = ((band or "").upper(), (ma or "").upper())
+                        if _rk != _last_radio_key[0]:
+                            _last_radio_key[0] = _rk
+                            if _modo_live[0] == "live" and (band or ma):
+                                try: _leggi_da_radio(silent=True)
+                                except Exception: pass
+                        if fb:
+                            _radio_vfob.set(f"VFO B  {fb/1_000_000:.6f}".rstrip("0").rstrip("."))
+                        else:
+                            _radio_vfob.set("VFO B  —.—————")
+                        try:
+                            split = bool(rig.is_split())
+                        except Exception:
+                            split = bool(fb and abs(fb-fa) > 100)
+                        _radio_split.set("SPLIT" if split else "SIMPLEX")
+                        _radio_cat.set("● CAT: ONLINE" + ("  •  SPLIT" if split else "  •  SIMPLEX"))
+                        _radio_live[0] = True
+                    else:
+                        _radio_cat.set("● CAT: ONLINE • nessuna frequenza")
+                else:
+                    _radio_cat.set("○ CAT: OFFLINE • valori QSO")
+                    _radio_split.set("SIMPLEX")
+            except Exception:
+                _radio_cat.set("○ CAT: non disponibile")
+            try:
+                dlg.after(1000, _radio_poll)
+            except Exception:
+                pass
+
+        dlg.after(200, _radio_poll)
+        # Lettura iniziale dalla radio all'apertura (solo in Live): due tentativi,
+        # per dare tempo a OmniRig di connettersi. Riempie freq/banda/modo da solo.
+        def _sync_iniziale(tent=0):
+            if not dlg.winfo_exists() or _modo_live[0] != "live":
+                return
+            rig = getattr(self, "_omnirig", None)
+            if rig is not None and rig.disponibile():
+                try: _leggi_da_radio(silent=True)
+                except Exception: pass
+            elif tent < 6:
+                dlg.after(500, lambda: _sync_iniziale(tent + 1))
+        dlg.after(500, _sync_iniziale)
+
+        # Campi extra della stazione: Nome/QTH/zone/Stato.
+        ctk.CTkLabel(form, text="Dati stazione", anchor="w", font=ctk.CTkFont(size=11, weight="bold"), text_color=("#4A5568", "#A0AEC0")).grid(row=6, column=2, columnspan=2, sticky="w", padx=(14,0), pady=(2,0))
+        extra = ctk.CTkFrame(form, fg_color="transparent")
+        extra.grid(row=7, column=2, columnspan=2, sticky="new", pady=(2, 6), padx=(14, 0))
+        extra.grid_columnconfigure(1, weight=1)   # colonna entry larga (Nome/QTH/Stato)
+        extra.grid_columnconfigure(3, weight=1)   # per la coppia CQ/ITU sulla stessa riga
+
+        def _ef_full(rr, lblkey):
+            ctk.CTkLabel(extra, text=T(lblkey), width=62, anchor="e",
+                         font=ctk.CTkFont(size=11)).grid(row=rr, column=0, sticky="e",
+                                                         padx=(0, 8), pady=3)
+            e = ctk.CTkEntry(extra, height=30)
+            e.grid(row=rr, column=1, columnspan=3, sticky="ew", pady=3)
+            return e
+
+        e_nome  = _ef_full(0, "f_nome")
+        e_qth   = _ef_full(1, "f_qth")
+        # CQ e ITU affiancati sulla stessa riga
+        ctk.CTkLabel(extra, text=T("f_cqz"), width=62, anchor="e",
+                     font=ctk.CTkFont(size=11)).grid(row=2, column=0, sticky="e", padx=(0, 8), pady=3)
+        e_cqz = ctk.CTkEntry(extra, height=30)
+        e_cqz.grid(row=2, column=1, sticky="ew", pady=3, padx=(0, 8))
+        ctk.CTkLabel(extra, text=T("f_ituz"), width=40, anchor="e",
+                     font=ctk.CTkFont(size=11)).grid(row=2, column=2, sticky="e", padx=(0, 8), pady=3)
+        e_ituz = ctk.CTkEntry(extra, height=30)
+        e_ituz.grid(row=2, column=3, sticky="ew", pady=3)
+        e_state = _ef_full(3, "f_state")
+
+        # Lookup nominativo: riempie Country, Locatore e i campi extra.
+        def _aq_lookup(source):
+            call = e_call.get().strip().upper()
+            if not call:
+                messagebox.showwarning(T("attenzione"), T("ed_call_vuoto"), parent=dlg)
+                return
+            profili = self._carica_profili()
+            d = profili.get(self.profilo_attivo, {}) if self.profilo_attivo else {}
+            if source == "qrz":
+                try:
+                    from net.qrz import QRZClient
+                except Exception as ex:
+                    messagebox.showerror("QRZ", str(ex), parent=dlg); return
+                u, p = d.get("qrz_username", "").strip(), d.get("qrz_password", "").strip()
+                if not (u and p):
+                    messagebox.showwarning(T("attenzione"), T("qrz_no_config"), parent=dlg); return
+                client = QRZClient(u, p)
+            else:
+                u, p = d.get("hamqth_username", "").strip(), d.get("hamqth_password", "").strip()
+                if not (u and p):
+                    messagebox.showwarning(T("attenzione"), T("hqth_no_config"), parent=dlg); return
+                client = HamQTHClient(u, p)
+            info, err = client.lookup(call)
+            if err == "NOT_FOUND":
+                messagebox.showinfo(source.upper(), T("lookup_non_trovato"), parent=dlg); return
+            if err:
+                messagebox.showerror(source.upper(), err, parent=dlg); return
+            country = str(info.get("country", "")).strip()
+            grid = str(info.get("grid", "")).strip()
+            if country:
+                _country_auto[0] = False
+                e_country.delete(0, "end"); e_country.insert(0, country)
+            if grid:
+                e_loc.delete(0, "end"); e_loc.insert(0, grid)
+            for _e, _k in ((e_nome, "name"), (e_qth, "qth"), (e_cqz, "cq"),
+                           (e_ituz, "itu"), (e_state, "state")):
+                _v = str(info.get(_k, "")).strip()
+                if _v:
+                    _e.delete(0, "end"); _e.insert(0, _v)
+            _riempi_zone(country)   # se QRZ non dà CQ/ITU, deducile dal Paese
+
+        lk = ctk.CTkFrame(form, fg_color="transparent")
+        lk.grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 3))
+        dlg._lk = lk
+        _applica_modo(_modo_seg_var.get())   # applica la modalità iniziale (ora lk/contest_bar esistono)
+        ctk.CTkLabel(lk, text="🔎 Lookup", font=ctk.CTkFont(size=11, weight="bold"), text_color=("#2B6CB0", "#63B3ED")).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(lk, text=T("ed_lookup_hq"), width=115, height=30, fg_color="#4A5568",
+                      command=lambda: _aq_lookup("hamqth")).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(lk, text=T("ed_lookup_qrz"), width=95, height=30, fg_color="#4A5568",
+                      command=lambda: _aq_lookup("qrz")).pack(side="left")
 
         n_inseriti = [0]
 
@@ -2733,6 +4006,9 @@ class ADIFtoPDFApp(ctk.CTk):
             call = e_call.get().strip().upper()
             if not call:
                 messagebox.showwarning(T("attenzione"), T("addqso_err_call"), parent=dlg)
+                return
+            if _modo_live[0] == "contest" and not e_contest.get().strip():
+                messagebox.showwarning(T("attenzione"), T("aq_ctst_err_nome"), parent=dlg)
                 return
             banda = var_banda.get().strip()
             if not banda:
@@ -2777,6 +4053,11 @@ class ADIFtoPDFApp(ctk.CTk):
                     nuovo['cont'] = risultato[2]
             nuovo['rst_sent'] = e_rst_tx.get().strip()
             nuovo['rst_rcvd'] = e_rst_rx.get().strip()
+            for _fk, _e in (('name', e_nome), ('qth', e_qth), ('cqz', e_cqz),
+                            ('ituz', e_ituz), ('state', e_state)):
+                _v = _e.get().strip()
+                if _v:
+                    nuovo[_fk] = _v
             profilo_call = self.entry_owner.get().strip().upper()
             if profilo_call:
                 nuovo['station_callsign'] = profilo_call
@@ -2785,33 +4066,75 @@ class ADIFtoPDFApp(ctk.CTk):
             if profilo_grid:
                 nuovo['my_gridsquare'] = profilo_grid
 
-            self.qsos_caricati.append(nuovo)
-            self._log_modificato = True
-            if self.qsos_filtrati:
-                self.qsos_filtrati.append(nuovo)
-            self._aggiorna_tree()
+            if _modo_live[0] == "contest":
+                _cn = e_contest.get().strip()
+                if _cn:
+                    nuovo['contest_id'] = _cn
+                try:
+                    _serial[0] = max(1, int(e_stx.get().strip() or _serial[0]))
+                except Exception:
+                    pass
+                _sc = var_scambio.get()
+                _fisso = e_fisso.get().strip()
+                if _fisso:
+                    nuovo['stx'] = _fisso
+                elif _sc in (_SC_SER, _SC_SL):
+                    nuovo['stx'] = f"{_serial[0]:03d}"
+                _rx = e_srx.get().strip()
+                if _rx:
+                    nuovo['srx'] = _rx
+
+            if _modo_live[0] == "contest":
+                self._contest_qsos.append(nuovo)
+                _contest_salva()
+            else:
+                self.qsos_caricati.append(nuovo)
+                self._log_modificato = True
+                if self.qsos_filtrati:
+                    self.qsos_filtrati.append(nuovo)
+                self._aggiorna_tree()
+
+            if _modo_live[0] == "contest":
+                try: e_srx.delete(0, "end")
+                except Exception: pass
+                if not e_fisso.get().strip() and var_scambio.get() in (_SC_SER, _SC_SL):
+                    _serial[0] += 1
+                    _ct_show()
+                try: _aggiorna_qso_before("")
+                except Exception: pass
 
             # Memorizza i valori persistenti per il prossimo inserimento
             self._addqso_ultimi = {'banda': banda, 'freq': freq,
                                     'modo': var_modo.get().strip().upper(), 'sat': sat}
+            self._addqso_ultima_data = e_data.get().strip()
 
             # Svuota i campi specifici del QSO, mantiene banda/freq/modo/sat
             e_call.delete(0, 'end')
             e_country.delete(0, 'end')
             _country_auto[0] = True  # il prossimo Call può di nuovo auto-suggerire
             e_loc.delete(0, 'end')
-            live_var.set(True)  # riprende l'orologio live per il prossimo QSO
+            if _modo_live[0] == "live":
+                live_var.set(True)  # riprende l'orologio live per il prossimo QSO
+            else:
+                # in Manuale ripristina data ultima + ora corrente per il prossimo
+                try:
+                    e_data.delete(0, "end"); e_data.insert(0, self._addqso_ultima_data)
+                    e_ora.delete(0, "end")
+                    e_ora.insert(0, _dt.datetime.now(_dt.timezone.utc).strftime("%H%M%S"))
+                except Exception:
+                    pass
 
             n_inseriti[0] += 1
             contatore_var.set(T("addqso_inseriti", n=n_inseriti[0]))
             e_call.focus_set()
 
-        def _leggi_da_radio():
+        def _leggi_da_radio(silent=False):
             """Legge frequenza e modo dalla radio via OmniRig e compila i campi."""
             rig = getattr(self, "_omnirig", None)
             if rig is None or not rig.disponibile():
-                messagebox.showwarning(T("dxc_omnirig_no"),
-                                       T("dxc_omnirig_assente"), parent=dlg)
+                if not silent:
+                    messagebox.showwarning(T("dxc_omnirig_no"),
+                                           T("dxc_omnirig_assente"), parent=dlg)
                 return
             hz = rig.get_freq()
             if not hz:
@@ -2821,9 +4144,10 @@ class ADIFtoPDFApp(ctk.CTk):
                     diag = rig.diagnostica()
                 except Exception:
                     pass
-                messagebox.showwarning(T("dxc_omnirig_no"),
-                                       T("aq_radio_no_lettura") + "\n\n---\n" + diag,
-                                       parent=dlg)
+                if not silent:
+                    messagebox.showwarning(T("dxc_omnirig_no"),
+                                           T("aq_radio_no_lettura") + "\n\n---\n" + diag,
+                                           parent=dlg)
                 return
             mhz = f"{hz/1_000_000:.6f}".rstrip('0').rstrip('.')
             e_freq.delete(0, 'end'); e_freq.insert(0, mhz)
@@ -2831,6 +4155,7 @@ class ADIFtoPDFApp(ctk.CTk):
             if banda:
                 var_banda.set(banda)
             modo = rig.get_modo()
+            _radio_cat.set(f"CAT: OmniRig  •  {mhz} MHz" + (f"  •  {modo}" if modo else ""))
             if modo:
                 # Se la radio è in USB-D (data), è quasi certamente un modo
                 # digitale: usa il band plan per dedurre quale (FT8/RTTY...).
@@ -2858,15 +4183,19 @@ class ADIFtoPDFApp(ctk.CTk):
 
         _fr_radio = ctk.CTkFrame(dlg, fg_color="transparent")
         _fr_radio.pack(side="bottom", fill="x", padx=24, pady=(0, 4))
-        ctk.CTkButton(_fr_radio, text=T("aq_leggi_radio"), command=_leggi_da_radio,
+        ctk.CTkButton(_fr_radio, text="📻  " + T("aq_leggi_radio"), command=_leggi_da_radio,
                       fg_color=TH.PRIMARY, hover_color=TH.PRIMARY_H,
-                      height=32, font=ctk.CTkFont(size=12)).pack(fill="x")
+                      height=34, font=ctk.CTkFont(size=12, weight="bold")).pack(fill="x")
 
-        # Il form scorrevole riempie lo spazio centrale rimasto.
-        form.pack(side="top", fill="both", expand=True, padx=20, pady=(0, 4))
+        # Area centrale: a sinistra il blocco QSO/stazione, a destra "QSO precedenti".
+        body.pack(side="top", fill="both", expand=True, padx=16, pady=(0, 4))
+        paned.pack(fill="both", expand=True)
+        paned.add(form, minsize=520, stretch="always")
+        paned.add(qb_side, minsize=280, width=360, stretch="never")
 
         e_call.focus_set()
         dlg.bind("<Return>", lambda e: inserisci())
+        dlg.bind("<KP_Enter>", lambda e: inserisci())
 
     def logga_qso_da_satellite(self, sat_name):
         """Apre (o riusa) la finestra Aggiungi QSO precompilando il
@@ -3310,6 +4639,16 @@ class ADIFtoPDFApp(ctk.CTk):
         self.var_tema.set(tema)
         ctk.set_appearance_mode(tema)
         self._aggiorna_colori_tree()
+        try:
+            if getattr(self, '_dxc_win', None) is not None and self._dxc_win.winfo_exists():
+                self._dxc_win._applica_tema()
+        except Exception:
+            pass
+        try:
+            if getattr(self, '_fzr_alert_win', None) is not None and self._fzr_alert_win.winfo_exists():
+                self._fzr_alert_win._applica_tema()
+        except Exception:
+            pass
 
     def _on_main_focus(self, event=None):
         """Chiamato quando la finestra principale riceve il focus.
@@ -3376,16 +4715,60 @@ class ADIFtoPDFApp(ctk.CTk):
         except Exception:
             pass
 
+    def apri_fzr_alert(self):
+        """Apre FZR ALERT: monitor WSJT-X con dup-check (contest / log)."""
+        w = getattr(self, "_fzr_alert_win", None)
+        try:
+            if w is not None and w.winfo_exists():
+                w.lift(); w.focus_force(); return
+        except Exception:
+            pass
+        try:
+            from net.fzr_alert import FZRAlertWindow
+            self._fzr_alert_win = FZRAlertWindow(self, self)
+        except Exception as e:
+            from tkinter import messagebox
+            messagebox.showerror("FZR ALERT", str(e))
+
     def apri_dx_cluster(self):
         """Apre la finestra DX Cluster (singola istanza)."""
-        if hasattr(self, '_dxc_win') and self._dxc_win and self._dxc_win.winfo_exists():
-            self._dxc_win.lift(); self._dxc_win.focus_force()
+        try:
+            if getattr(self, '_dxc_win', None) is not None and self._dxc_win.winfo_exists():
+                self._dxc_win.lift(); self._dxc_win.focus_force()
+                return
+        except Exception:
+            pass
+        self._dxc_win = None
+        try:
+            self._dxc_win = DXClusterWindow(self, self)
+        except Exception as ex:
+            messagebox.showerror("DX Cluster", str(ex), parent=self)
+
+    def _apri_awards(self):
+        """Apre il cruscotto Award (WAS · DXCC · WAC · WAZ · VUCC · WPX · IOTA · USA-CA · WAJA) sui QSO
+        caricati. Ogni award è un tab con matrice righe × bande e livelli di
+        conferma. I QSO USA/DXCC devono avere DXCC valorizzato: se manca, usa
+        prima 'Deduci country'."""
+        if not self.qsos_caricati:
+            messagebox.showinfo("Award", "Nessun log caricato.", parent=self)
             return
-        self._dxc_win = DXClusterWindow(self, self)
+        try:
+            from gui.awards import AwardsWindow
+        except Exception as ex:
+            messagebox.showerror(
+                "Award", f"Modulo Award non disponibile:\n{ex}", parent=self)
+            return
+        try:
+            self._awards_win = AwardsWindow(self, qsos=self.qsos_caricati)
+            self._awards_win.focus()
+        except Exception as ex:
+            messagebox.showerror(
+                "Award", f"Errore nell'apertura Award:\n{ex}", parent=self)
 
     def apri_satelliti(self):
         """Apre la finestra di predizione passaggi satellitari (LEO)."""
         try:
+            from gui.dialogs.satellite import SatellitiDialog
             SatellitiDialog(self, self)
         except Exception as e:
             import traceback as _tb
@@ -4175,7 +5558,7 @@ class ADIFtoPDFApp(ctk.CTk):
                         if f_ops.get().strip(): fw.write(f"OPERATORS: {f_ops.get().strip()}{nl}")
                         if f_club.get().strip(): fw.write(f"CLUB: {f_club.get().strip()}{nl}")
                         if f_loc.get().strip(): fw.write(f"LOCATION: {f_loc.get().strip()}{nl}")
-                        fw.write(f"CLAIMED-SCORE: {f_score.get().strip() or '0'}{nl}CREATED-BY: ADIF FZR 2.5{nl}{nl}")
+                        fw.write(f"CLAIMED-SCORE: {f_score.get().strip() or '0'}{nl}CREATED-BY: ADIF FZR {VERSIONE}{nl}{nl}")
                         FREQ_MAP = {"160m":"1800","80m":"3500","60m":"5357","40m":"7000",
                             "30m":"10100","20m":"14000","17m":"18068","15m":"21000",
                             "12m":"24890","10m":"28000","6m":"50000","2m":"144000",
@@ -4434,6 +5817,11 @@ class ADIFtoPDFApp(ctk.CTk):
         per ogni etichetta, così l'intero menù è bilingue e viene
         rigenerato da capo ad ogni cambio lingua da _aggiorna_lingua()."""
         import tkinter as _tk
+        # Etichette nuove (Impostazioni, Radio): inserite in TRADUZIONI così
+        # restano bilingui come le altre, senza toccare config.py.
+        TRADUZIONI.setdefault("menu_cascade_impostazioni",
+                              {"IT": "Impostazioni", "EN": "Settings"})
+        TRADUZIONI.setdefault("menu_radio_sub", {"IT": "Radio", "EN": "Radio"})
         menubar = _tk.Menu(self)
         self.configure(menu=menubar)
 
@@ -4456,7 +5844,6 @@ class ADIFtoPDFApp(ctk.CTk):
             variable=self.var_controllo_post_apertura,
             command=self._salva_impostazioni_apertura
         )
-        m_file.add_command(label=T("menu_deduci_country"), command=self.deduci_country_da_nominativo)
         m_file.add_separator()
         m_file.add_command(label=T("menu_esci"),            command=self.destroy,         accelerator="Alt+F4")
         self.bind_all("<Control-o>", lambda e: self.sfoglia_file())
@@ -4469,15 +5856,16 @@ class ADIFtoPDFApp(ctk.CTk):
         m_edit.add_separator()
         m_edit.add_command(label=T("menu_editor_log"),     command=self.apri_preview)
         m_edit.add_command(label=T("menu_dupe_check"),     command=self.apri_duplicati)
+        m_edit.add_command(label=T("menu_deduci_country"), command=self.deduci_country_da_nominativo)
         m_edit.add_separator()
         m_edit.add_command(label=T("menu_filtri_qso"),     command=self.apri_filtri)
-        m_edit.add_command(label=T("menu_colonne_pdf"),    command=self._apri_dialog_colonne)
         self.bind_all("<Control-n>", lambda e: self.apri_aggiungi_qso())
 
         # Esporta
         m_exp = _tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label=T("menu_cascade_esporta"), menu=m_exp)
         m_exp.add_command(label=T("menu_genera_pdf"),      command=self.processa_e_salva, accelerator="Ctrl+P")
+        m_exp.add_command(label="📤 " + T("esporta_adif"),  command=self.esporta_adif)
         m_exp.add_command(label=T("menu_esporta_csv"),     command=self.esporta_csv)
         m_exp.add_command(label=T("menu_esporta_excel"),   command=self.esporta_excel)
         m_exp.add_command(label=T("menu_esporta_html"),    command=self.esporta_html)
@@ -4507,7 +5895,10 @@ class ADIFtoPDFApp(ctk.CTk):
         qsl_download_sub = _tk.Menu(m_qsl, tearoff=0)
         m_qsl.add_cascade(label=T("menu_scarica_da"), menu=qsl_download_sub)
         qsl_download_sub.add_command(label=T("menu_lotw_download"), command=self.apri_lotw_download)
+        qsl_download_sub.add_command(label=T("menu_allinea_lotw"), command=self.apri_lotw_allinea)
         qsl_download_sub.add_command(label=T("menu_eqsl_download"), command=self.apri_eqsl_download)
+        m_qsl.add_separator()
+        m_qsl.add_command(label=T("menu_sync_completo"), command=self.apri_sync_completo)
 
         # Visualizza
         m_view = _tk.Menu(menubar, tearoff=0)
@@ -4516,57 +5907,56 @@ class ADIFtoPDFApp(ctk.CTk):
         m_view.add_command(label=T("menu_dx_cluster"),      command=self.apri_dx_cluster)
         m_view.add_command(label=T("menu_wsjtx"),           command=self.apri_wsjtx)
         m_view.add_command(label="Passaggi satelliti",   command=self.apri_satelliti)
+        m_view.add_command(label="Award · WAS · DXCC · WAC · WAZ · VUCC · WPX · IOTA · USA-CA · WAJA", command=self._apri_awards)
         m_view.add_separator()
         m_view.add_checkbutton(
             label=T("menu_colora_righe"),
             variable=self.var_colora_righe,
             command=self._aggiorna_tree)
-        m_view.add_separator()
-        tema_sub = _tk.Menu(m_view, tearoff=0)
-        m_view.add_cascade(label=T("menu_tema"), menu=tema_sub)
-        for t in ["System", "Light", "Dark"]:
-            tema_sub.add_command(label=t, command=lambda x=t: self._set_tema(x))
-        lingua_sub = _tk.Menu(m_view, tearoff=0)
-        m_view.add_cascade(label=T("menu_lingua"), menu=lingua_sub)
-        lingua_sub.add_command(label=T("menu_italiano"), command=lambda: self._set_lingua("IT"))
-        lingua_sub.add_command(label=T("menu_english"),  command=lambda: self._set_lingua("EN"))
 
-        # Strumenti
+        # Strumenti — solo strumenti veri
         m_tools = _tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label=T("menu_cascade_strumenti"), menu=m_tools)
+        m_tools.add_command(label=T("menu_dist_calc"),   command=self.apri_calcolatore_distanza)
+        m_tools.add_command(label=T("menu_dottore_sat"), command=self.apri_dottore_sat)
 
-        # ── Sottomenu: Aspetto PDF ──
-        tools_pdf_sub = _tk.Menu(m_tools, tearoff=0)
-        m_tools.add_cascade(label=T("menu_aspetto_pdf"), menu=tools_pdf_sub)
-        tools_pdf_sub.add_command(label=T("menu_colori_pdf"),    command=self.apri_colori)
-        tools_pdf_sub.add_command(label=T("menu_colori_html"),   command=self.apri_colori_html)
-        tools_pdf_sub.add_command(label=T("menu_opzioni_reg_pdf"), command=self.apri_opzioni_registro_pdf)
-        tools_pdf_sub.add_command(label=T("menu_formato_pdf"),   command=self._apri_dialog_formato)
+        # Impostazioni — tutte le preferenze in un unico posto
+        m_set = _tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label=T("menu_cascade_impostazioni"), menu=m_set)
+        m_set.add_command(label=T("menu_preferenze"), command=self.apri_preferenze)
+        m_set.add_separator()
+        m_set.add_command(label=T("menu_tb_custom"),     command=self.apri_personalizza_toolbar)
+        m_set.add_command(label=T("menu_pers_colonne"),  command=self.apri_personalizza_colonne)
+        m_set.add_separator()
 
-        # ── Sottomenu: Calcolatori ──
-        tools_calc_sub = _tk.Menu(m_tools, tearoff=0)
-        m_tools.add_cascade(label=T("menu_calcolatori"), menu=tools_calc_sub)
-        tools_calc_sub.add_command(label=T("menu_dist_calc"),     command=self.apri_calcolatore_distanza)
-        tools_calc_sub.add_command(label=T("menu_dottore_sat"),   command=self.apri_dottore_sat)
+        # ── Sottomenu: Aspetto PDF (con Colonne PDF spostata qui) ──
+        set_pdf_sub = _tk.Menu(m_set, tearoff=0)
+        m_set.add_cascade(label=T("menu_aspetto_pdf"), menu=set_pdf_sub)
+        set_pdf_sub.add_command(label=T("menu_colori_pdf"),      command=self.apri_colori)
+        set_pdf_sub.add_command(label=T("menu_colori_html"),     command=self.apri_colori_html)
+        set_pdf_sub.add_command(label=T("menu_formato_pdf"),     command=self._apri_dialog_formato)
+        set_pdf_sub.add_command(label=T("menu_opzioni_reg_pdf"), command=self.apri_opzioni_registro_pdf)
+        set_pdf_sub.add_command(label=T("menu_colonne_pdf"),     command=self._apri_dialog_colonne)
 
-        m_tools.add_separator()
-        m_tools.add_command(label=T("menu_preferenze"),
-                            command=self.apri_preferenze)
-        m_tools.add_command(label=T("menu_tb_custom"),
-                            command=self.apri_personalizza_toolbar)
-        m_tools.add_command(label=T("menu_pers_colonne"),
-                            command=self.apri_personalizza_colonne)
-        m_tools.add_command(label=T("menu_radio_omnirig"),
-                            command=self.apri_impostazioni_radio)
-        m_tools.add_command(label=T("menu_radio_display"),
-                            command=self.apri_display_radio)
-        m_tools.add_separator()
+        # ── Sottomenu: Radio ──
+        set_radio_sub = _tk.Menu(m_set, tearoff=0)
+        m_set.add_cascade(label=T("menu_radio_sub"), menu=set_radio_sub)
+        set_radio_sub.add_command(label=T("menu_radio_omnirig"), command=self.apri_impostazioni_radio)
+        set_radio_sub.add_command(label=T("menu_radio_display"), command=self.apri_display_radio)
+        m_set.add_separator()
 
         # ── Sottomenu: Profili operatore ──
-        tools_prof_sub = _tk.Menu(m_tools, tearoff=0)
-        m_tools.add_cascade(label=T("menu_profili_op"), menu=tools_prof_sub)
-        tools_prof_sub.add_command(label=T("menu_profili"),       command=self.apri_gestione_profili)
-        tools_prof_sub.add_command(label=T("menu_salva_profilo"), command=self.salva_profilo)
+        set_prof_sub = _tk.Menu(m_set, tearoff=0)
+        m_set.add_cascade(label=T("menu_profili_op"), menu=set_prof_sub)
+        set_prof_sub.add_command(label=T("menu_profili"),       command=self.apri_gestione_profili)
+        set_prof_sub.add_command(label=T("menu_imposta_log"),
+                                 command=self.imposta_log_ufficiale)
+        set_prof_sub.add_command(label=T("menu_salva_profilo"), command=self.salva_profilo)
+        set_prof_sub.add_command(label=T("menu_cartella_backup"),
+                                 command=self.imposta_cartella_backup)
+        set_prof_sub.add_command(label=T("menu_ripristina"),
+                                 command=self.ripristina_da_backup)
+        m_set.add_separator()
 
         # Aiuto
         m_help = _tk.Menu(menubar, tearoff=0)
@@ -4574,6 +5964,13 @@ class ADIFtoPDFApp(ctk.CTk):
         m_help.add_command(label=T("menu_manuale"), command=self._apri_manuale)
         m_help.add_separator()
         m_help.add_command(label=T("menu_about"), command=self._about)
+
+    def _agg_hdr_filtri(self):
+        try:
+            arrow = "▾" if getattr(self, "_fil_aperti", True) else "▸"
+            self._fil_hdr.configure(text=f"{arrow}  " + T("sez_filtri"))
+        except Exception:
+            pass
 
     def _aggiorna_lingua(self):
         self.title(f"{APP_TITOLO}  ·  build {BUILD_DATE}  —  IW1FZR")
@@ -4672,6 +6069,13 @@ class ADIFtoPDFApp(ctk.CTk):
                 lbl.configure(text=T(key))
         except Exception:
             pass
+        # Pulsanti di navigazione (sidebar)
+        try:
+            for b, icon, key in getattr(self, "_nav_btn_refs", []):
+                b.configure(text=f"{icon}  {T(key)}")
+        except Exception:
+            pass
+        self._agg_hdr_filtri()
 
     # ── Cambio tema ───────────────────────────
     def cambia_tema(self, valore):
@@ -4773,7 +6177,7 @@ class ADIFtoPDFApp(ctk.CTk):
         a = h.append
         a('<!DOCTYPE html><html lang="it"><head>')
         a('<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">')
-        a(f'<title>Log {stazione} - ADIF FZR 2.5</title>')
+        a(f'<title>Log {stazione} - ADIF FZR 2.6</title>')
         a('<style>')
         a('*{box-sizing:border-box;margin:0;padding:0}')
         a('body{font-family:Arial,sans-serif;background:#0D1117;color:#E2E8F0;font-size:.93em}')
@@ -4808,7 +6212,7 @@ class ADIFtoPDFApp(ctk.CTk):
         a('.footer{text-align:center;padding:20px;color:#4A5568;font-size:.8em;margin-top:20px}')
         a('</style></head><body>')
         a(f'<div class="header"><div style="max-width:1200px;margin:0 auto">')
-        a(f'<h1>Log {stazione}</h1><p>ADIF FZR 2.5 &nbsp;&middot;&nbsp; {len(qsos)} QSO totali</p>')
+        a(f'<h1>Log {stazione}</h1><p>ADIF FZR 2.6 &nbsp;&middot;&nbsp; {len(qsos)} QSO totali</p>')
         a('</div></div>')
         a('<div class="container">')
         a('<div class="filters">')
@@ -4833,7 +6237,7 @@ class ADIFtoPDFApp(ctk.CTk):
         a('</tr></thead><tbody id="tb"></tbody></table>')
         a('<div class="nr" id="nr" style="display:none">Nessun QSO trovato</div>')
         a('</div></div>')
-        a(f'<div class="footer">ADIF FZR 2.5 &middot; {stazione} &middot; {len(qsos)} QSO</div>')
+        a(f'<div class="footer">ADIF FZR 2.6 &middot; {stazione} &middot; {len(qsos)} QSO</div>')
         a('<script>')
         a('const D=' + rows_json + ';')
         a('let sc=0,sd2=1,fi=[...D];')
@@ -4936,7 +6340,8 @@ class ADIFtoPDFApp(ctk.CTk):
         # ── Dialog anteprima ──
         dlg = ctk.CTkToplevel(self)
         dlg.title(T("imp_smart_titolo"))
-        dlg.geometry("560x640")
+        dlg.geometry("620x680")
+        dlg.resizable(False, True)
         dlg.transient(self)
         dlg.grab_set(); dlg.lift(); dlg.focus_force()
         dlg.after(200, lambda: (dlg.lift(), dlg.focus_force()))
@@ -4979,6 +6384,79 @@ class ADIFtoPDFApp(ctk.CTk):
         ctk.CTkLabel(dlg, text=top_modi or "—", anchor="w", wraplength=500,
                      font=ctk.CTkFont(size=11), text_color="gray").pack(fill="x", padx=24)
 
+        # ── Anteprima QSO: scegli cosa importare ──
+        _LIST_CAP = 3000
+        incluso = {}
+        _sel_attiva = len(qsos) <= _LIST_CAP
+        if _sel_attiva:
+            import tkinter.ttk as _ttk
+            ctk.CTkLabel(dlg, text=T("lbl_anteprima_sel"),
+                         anchor="w", font=ctk.CTkFont(size=12, weight="bold")
+                         ).pack(fill="x", padx=24, pady=(10, 2))
+            lst = ctk.CTkFrame(dlg, fg_color="transparent")
+            lst.pack(fill="x", padx=20)
+            cols = ("sel", "call", "data", "ora", "band", "mode")
+            tv = _ttk.Treeview(lst, columns=cols, show="headings", height=6,
+                               selectmode="none")
+            for c, txt, wdt, anc in [("sel", "✓", 34, "center"),
+                                     ("call", "Call", 100, "w"),
+                                     ("data", "Data", 84, "center"),
+                                     ("ora", "Ora", 56, "center"),
+                                     ("band", "Banda", 62, "center"),
+                                     ("mode", "Modo", 64, "center")]:
+                tv.heading(c, text=txt)
+                tv.column(c, width=wdt, anchor=anc, stretch=(c == "call"))
+            sb = _ttk.Scrollbar(lst, orient="vertical", command=tv.yview)
+            tv.configure(yscrollcommand=sb.set)
+            tv.pack(side="left", fill="x", expand=True)
+            sb.pack(side="right", fill="y")
+            for i, q in enumerate(qsos):
+                incluso[i] = True
+                tv.insert("", "end", iid=str(i), values=(
+                    "\u2611",
+                    str(q.get('call', '')).upper(),
+                    _fmtd(str(q.get('qso_date', '')).strip()),
+                    str(q.get('time_on', '')).strip()[:6],
+                    str(q.get('band', '')).lower(),
+                    str(q.get('mode', '')).upper()))
+
+            lbl_sel = ctk.CTkLabel(dlg, text="", font=ctk.CTkFont(size=11),
+                                   text_color="gray")
+
+            def _aggiorna_sel():
+                n = sum(1 for v in incluso.values() if v)
+                lbl_sel.configure(text=T("lbl_selezionati", n=n, m=len(qsos)))
+
+            def _toggle(ev):
+                iid = tv.identify_row(ev.y)
+                if not iid:
+                    return
+                i = int(iid)
+                incluso[i] = not incluso.get(i, True)
+                tv.set(iid, "sel", "\u2611" if incluso[i] else "\u2610")
+                _aggiorna_sel()
+
+            def _tutti(v):
+                for i in incluso:
+                    incluso[i] = v
+                    tv.set(str(i), "sel", "\u2611" if v else "\u2610")
+                _aggiorna_sel()
+
+            tv.bind("<Button-1>", _toggle)
+            selb = ctk.CTkFrame(dlg, fg_color="transparent")
+            selb.pack(pady=(4, 0))
+            ctk.CTkButton(selb, text=T("btn_tutti"), width=70, height=24,
+                          command=lambda: _tutti(True)).pack(side="left", padx=3)
+            ctk.CTkButton(selb, text=T("btn_nessuno"), width=70, height=24,
+                          fg_color="#718096", command=lambda: _tutti(False)).pack(side="left", padx=3)
+            lbl_sel.pack(pady=(2, 0))
+            _aggiorna_sel()
+        else:
+            ctk.CTkLabel(dlg,
+                text=T("msg_troppi_qso", n=len(qsos)),
+                font=ctk.CTkFont(size=11), text_color="gray",
+                justify="left").pack(fill="x", padx=24, pady=(8, 0))
+
         # ── Opzioni import ──
         ctk.CTkLabel(dlg, text=T("imp_modalita"),
                      font=ctk.CTkFont(size=12, weight="bold")).pack(pady=(14,4))
@@ -5005,7 +6483,13 @@ class ADIFtoPDFApp(ctk.CTk):
         lbl_esito.pack(pady=2)
 
         def _esegui():
-            nuovi = list(qsos)
+            if _sel_attiva:
+                nuovi = [qsos[i] for i in range(len(qsos)) if incluso.get(i, True)]
+                if not nuovi:
+                    messagebox.showwarning(T("attenzione"), T("msg_nessun_sel"))
+                    return
+            else:
+                nuovi = list(qsos)
             saltati = 0
             if salta_dup.get():
                 # Costruisci indice dei QSO esistenti se in modalità aggiungi
@@ -5033,17 +6517,24 @@ class ADIFtoPDFApp(ctk.CTk):
                 str(q.get('qso_date','')).strip(),
                 str(q.get('time_on','')).strip().zfill(6)))
             self.qsos_filtrati = list(self.qsos_caricati)
+            self._log_modificato = True   # così alla chiusura viene offerto il salvataggio
             self._aggiorna_tree()
             dlg.destroy()
+            # Finestra di conferma dei campi dedotti dal nominativo.
+            n_arric = self._conferma_campi(nuovi)
+            if n_arric:
+                self._aggiorna_tree()
             msg = T("imp_importati_n", n=len(nuovi))
             if saltati:
                 msg += "\n" + T("imp_dup_saltati", n=saltati)
+            if n_arric:
+                msg += "\n" + T("imp_country_dedotti", n=n_arric)
             msg += "\n\n" + T("imp_totale_log", n=len(self.qsos_caricati))
             msg += "\n" + T("imp_salva_ricorda")
             messagebox.showinfo(T("imp_completato"), msg)
 
         fr = ctk.CTkFrame(dlg, fg_color="transparent")
-        fr.pack(fill="x", padx=30, pady=16)
+        fr.pack(side="bottom", fill="x", padx=30, pady=(8, 12))
         ctk.CTkButton(fr, text=T("imp_importa"), command=_esegui, height=38,
                       fg_color=TH.SUCCESS_H, hover_color=TH.SUCCESS
                       ).pack(side="left", expand=True, fill="x", padx=(0,6))
@@ -5421,24 +6912,38 @@ class ADIFtoPDFApp(ctk.CTk):
                     self.qsos_caricati.extend(qsos_cbr)
                 else:  # NO — sostituisci
                     self.qsos_caricati = qsos_cbr
-                    self.qsos_filtrati = list(qsos_cbr)
                     self.filepath = path
             else:
                 # Nessun log — crea nuovo
                 self.qsos_caricati = qsos_cbr
-                self.qsos_filtrati = list(qsos_cbr)
                 self.filepath = path
 
-            # Aggiorna interfaccia
+            # Aggiorna la vista (mancava: i contatti non comparivano).
+            self.qsos_filtrati = list(self.qsos_caricati)
+            self._log_modificato = True
+            self._aggiorna_tree()
+
+            # Cabrillo = QSO di contest, privi dei campi di location: apro la
+            # finestra di conferma dei campi dedotti dal nominativo.
+            n_arric = self._conferma_campi(qsos_cbr)
+            if n_arric:
+                self._aggiorna_tree()
+
             nome = os.path.basename(path)
             n = len(self.qsos_caricati)
             self.lbl_status.configure(
                 text=f"{nome} — {n} QSO (da CBR)",
                 text_color="#ED8936")
             self.lbl_filtri.configure(text=T("nessun_filtro"), text_color="gray")
+            extra = ""
+            if n_arric:
+                extra = (chr(10) +
+                         f"Country/DXCC/Continente dedotti per {n_arric} QSO dal nominativo." +
+                         chr(10) +
+                         "Per zone CQ/ITU e locator usa poi 'Allinea log a LoTW'.")
             messagebox.showinfo("Importato",
                 f"{len(qsos_cbr)} QSO importati dal file Cabrillo." + chr(10) +
-                f"Totale log: {len(self.qsos_caricati)} QSO" + chr(10) + chr(10) +
+                f"Totale log: {len(self.qsos_caricati)} QSO" + extra + chr(10) + chr(10) +
                 "Usa 'Salva ADIF' per salvare il log su disco.")
         except Exception as ex:
             messagebox.showerror(T("errore"),
@@ -5468,25 +6973,45 @@ class ADIFtoPDFApp(ctk.CTk):
             ):
                 return
 
+        filtro_attivo = (n != tot)
+
+        # Log ufficiale del profilo attivo = destinazione di salvataggio di
+        # default: se impostato e senza filtro attivo, salva DIRETTAMENTE lì,
+        # senza la finestra di scelta cartella (che generava confusione).
+        log_uff = self._log_ufficiale_attivo()
+        if log_uff and not filtro_attivo:
+            if messagebox.askyesno(
+                    T("ttl_salva_log_uff"),
+                    T("msg_aggiorna_log", p=log_uff)):
+                try:
+                    self._scrivi_adif(log_uff, qsos)
+                    self.filepath = log_uff
+                    self._log_modificato = False
+                    # Il backup su DB/cloud gira in BACKGROUND: il salvataggio
+                    # ADIF resta immediato e l'interfaccia non si blocca.
+                    self._mirror_db_async(log_uff, qsos)
+                    messagebox.showinfo(T("successo"),
+                        T("salva_adif_ok", f=os.path.basename(log_uff)))
+                except Exception as ex:
+                    messagebox.showerror(T("errore"), f"{T('salva_adif_err')}{ex}")
+                return
+            # 'No' → prosegue col salvataggio come copia (flusso sotto)
+
+        # Nessun log ufficiale (o filtro attivo, o copia): salvataggio standard.
         if self.filepath:
             base = os.path.splitext(os.path.basename(self.filepath))[0]
-            nome_def = base + "_QSL.adif"
+            nome_def = base + ("_filtrato" if filtro_attivo else "_QSL") + ".adif"
         else:
-            # Nessun file di origine (es. log iniziato da zero con
-            # "Aggiungi QSO"): propone un nome generico con la data odierna.
             nome_def = "ADIF_FZR_" + datetime.now().strftime("%Y%m%d") + ".adif"
 
-        save_path = self._chiedi_cartella_output(nome_def)
-        if save_path is None:
-            return  # dialogo chiuso con X
-        if save_path == "":
-            # Usa dialogo standard
-            save_path = filedialog.asksaveasfilename(
-                title=T("dv_salva_adif_agg"),
-                defaultextension=".adif",
-                filetypes=[("ADIF files", "*.adif"), ("All files", "*.*")],
-                initialfile=nome_def
-            )
+        kw = {}
+        if log_uff and os.path.isdir(os.path.dirname(log_uff)):
+            kw['initialdir'] = os.path.dirname(log_uff)
+        save_path = filedialog.asksaveasfilename(
+            title=T("dv_salva_adif_agg"),
+            defaultextension=".adif",
+            filetypes=[("ADIF files", "*.adif"), ("All files", "*.*")],
+            initialfile=nome_def, **kw)
         if not save_path:
             return
         try:
@@ -5495,6 +7020,317 @@ class ADIFtoPDFApp(ctk.CTk):
             messagebox.showinfo(T("successo"), T("salva_adif_ok", f=os.path.basename(save_path)))
         except Exception as ex:
             messagebox.showerror(T("errore"), f"{T('salva_adif_err')}{ex}")
+
+    def esporta_adif(self):
+        """Esporta il log (vista corrente) in un file ADIF scelto dall'utente,
+        SENZA toccare il log ufficiale del profilo. Utile per caricare su
+        LoTW/eQSL/Clublog o per un backup/condivisione. Se è attivo un filtro,
+        esporta solo i QSO visibili."""
+        if not self.qsos_caricati:
+            messagebox.showwarning(T("attenzione"), T("msg_no_qso_exp"))
+            return
+        qsos = self._qsos_attivi()
+        tot = len(self.qsos_caricati)
+        n = len(qsos)
+        base = ""
+        if self.profilo_attivo:
+            base = re.sub(r'[^A-Za-z0-9_-]', '', self.profilo_attivo) + "_"
+        nome_def = f"{base}export_{datetime.now().strftime('%Y%m%d')}.adif"
+        save_path = filedialog.asksaveasfilename(
+            parent=self, title=T("esporta_adif"),
+            defaultextension=".adif",
+            filetypes=[("ADIF files", "*.adif"), ("Tutti i file", "*.*")],
+            initialfile=nome_def)
+        if not save_path:
+            return
+        # Sicurezza: 'Esporta' non deve sovrascrivere il log ufficiale.
+        log_uff = self._log_ufficiale_attivo()
+        if log_uff and os.path.abspath(save_path) == os.path.abspath(log_uff):
+            messagebox.showwarning(T("esporta_adif"), T("msg_exp_e_loguff"))
+            return
+        try:
+            self._scrivi_adif(save_path, qsos)
+            if n != tot:
+                messagebox.showinfo(T("successo"), T("msg_exp_ok_filt", n=n, tot=tot, f=os.path.basename(save_path)))
+            else:
+                messagebox.showinfo(T("successo"), T("msg_exp_ok", n=n, f=os.path.basename(save_path)))
+        except Exception as ex:
+            messagebox.showerror(T("errore"), T("err_exp_adif", ex=ex))
+
+    def _percorso_impostazioni(self):
+        return os.path.join(cartella_dati(), "impostazioni.json")
+
+    def _carica_impostazioni(self):
+        try:
+            with open(self._percorso_impostazioni(), encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _salva_impostazioni(self, d):
+        try:
+            os.makedirs(cartella_dati(), exist_ok=True)
+            with open(self._percorso_impostazioni(), "w", encoding="utf-8") as f:
+                json.dump(d, f, indent=2, ensure_ascii=False)
+            return True
+        except Exception:
+            return False
+
+    def _cartella_backup(self):
+        """Cartella dedicata per DB e backup. Default: <dati>/Backup.
+        Personalizzabile (anche dentro una cartella cloud sincronizzata)."""
+        imp = self._carica_impostazioni()
+        d = str(imp.get("backup_dir", "")).strip()
+        if not d:
+            d = os.path.join(cartella_dati(), "Backup")
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            pass
+        return d
+
+    def _rileva_cloud(self):
+        """Rileva cartelle di sincronizzazione cloud installate. Ritorna una
+        lista di (etichetta, percorso) esistenti."""
+        out = []
+        home = os.path.expanduser("~")
+        # Dropbox: percorso ufficiale in info.json
+        for base in (os.environ.get("APPDATA", ""), os.environ.get("LOCALAPPDATA", "")):
+            info = os.path.join(base, "Dropbox", "info.json") if base else ""
+            if info and os.path.exists(info):
+                try:
+                    with open(info, encoding="utf-8") as f:
+                        j = json.load(f)
+                    for k in ("personal", "business"):
+                        p = j.get(k, {}).get("path")
+                        if p and os.path.isdir(p):
+                            out.append(("Dropbox", p)); break
+                except Exception:
+                    pass
+                break
+        if not any(l == "Dropbox" for l, _ in out):
+            for p in (os.path.join(home, "Dropbox"),):
+                if os.path.isdir(p):
+                    out.append(("Dropbox", p)); break
+        # Google Drive
+        for p in (os.path.join(home, "Google Drive"), os.path.join(home, "My Drive"),
+                  "G:\\My Drive", "G:\\Il mio Drive"):
+            if os.path.isdir(p):
+                out.append(("Google Drive", p)); break
+        # OneDrive
+        for env in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
+            p = os.environ.get(env, "")
+            if p and os.path.isdir(p):
+                out.append(("OneDrive", p)); break
+        return out
+
+    def imposta_cartella_backup(self):
+        """Finestra per scegliere la cartella di DB/backup, con scorciatoie
+        alle cartelle cloud rilevate (sync automatico se punti lì)."""
+        dlg = ctk.CTkToplevel(self)
+        dlg.title(T("ttl_backup"))
+        dlg.geometry("560x360")
+        dlg.transient(self); dlg.grab_set(); dlg.lift()
+        ctk.CTkLabel(dlg, text=T("ttl_backup"),
+                     font=ctk.CTkFont(size=15, weight="bold")).pack(pady=(14, 4))
+        ctk.CTkLabel(dlg, text=T("hint_backup_cloud"), wraplength=500, justify="left",
+                     font=ctk.CTkFont(size=11), text_color="gray").pack(padx=20)
+        lbl_cur = ctk.CTkLabel(dlg, text="", wraplength=500, justify="left",
+                               font=ctk.CTkFont(size=11, weight="bold"))
+        lbl_cur.pack(padx=20, pady=(8, 4), anchor="w")
+
+        def _aggiorna():
+            lbl_cur.configure(text=T("lbl_backup_att", p=self._cartella_backup()))
+
+        def _imposta(path):
+            imp = self._carica_impostazioni()
+            imp["backup_dir"] = path
+            self._salva_impostazioni(imp)
+            try: os.makedirs(path, exist_ok=True)
+            except Exception: pass
+            _aggiorna()
+            messagebox.showinfo(T("ttl_backup"), T("msg_backup_impostata", p=path), parent=dlg)
+
+        # Scorciatoie cloud
+        cloud = self._rileva_cloud()
+        if cloud:
+            ctk.CTkLabel(dlg, text=T("lbl_cloud_trovati"), anchor="w",
+                         font=ctk.CTkFont(size=11)).pack(fill="x", padx=20, pady=(6, 0))
+            cf = ctk.CTkFrame(dlg, fg_color="transparent"); cf.pack(fill="x", padx=20)
+            for nome, p in cloud:
+                dest = os.path.join(p, "ADIF_FZR_Backup")
+                ctk.CTkButton(cf, text=f"☁ {nome}", width=140,
+                              command=lambda d=dest: _imposta(d)).pack(side="left", padx=4, pady=4)
+
+        bb = ctk.CTkFrame(dlg, fg_color="transparent")
+        bb.pack(side="bottom", fill="x", padx=24, pady=(6, 14))
+        def _sfoglia():
+            p = filedialog.askdirectory(title=T("ttl_backup"),
+                                        initialdir=self._cartella_backup())
+            if p:
+                _imposta(p)
+        ctk.CTkButton(bb, text=T("btn_sfoglia_cart"), command=_sfoglia, height=36,
+                      fg_color=_BTN_ACT).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ctk.CTkButton(bb, text=T("btn_chiudi"), command=dlg.destroy, height=36,
+                      width=100, fg_color="#718096").pack(side="left")
+        _aggiorna()
+
+    def ripristina_da_backup(self):
+        """Finestra per ripristinare il log da un backup (.sqlite/.bak) della
+        cartella backup — che, se è in Drive/Dropbox/OneDrive, è la copia cloud.
+        Carica i QSO nella vista; l'utente controlla e poi salva."""
+        import glob
+        import time as _time
+        import tkinter.ttk as _ttk
+        from utils.db import leggi_qsos, info_db
+        folder = self._cartella_backup()
+        files = sorted(set(glob.glob(os.path.join(folder, "*.sqlite")) +
+                           glob.glob(os.path.join(folder, "*.sqlite.bak*"))),
+                       key=lambda f: os.path.getmtime(f), reverse=True)
+
+        dlg = ctk.CTkToplevel(self)
+        dlg.title(T("ttl_ripristina"))
+        dlg.geometry("640x460")
+        dlg.transient(self); dlg.grab_set(); dlg.lift()
+        ctk.CTkLabel(dlg, text=T("ttl_ripristina"),
+                     font=ctk.CTkFont(size=15, weight="bold")).pack(pady=(12, 2))
+        ctk.CTkLabel(dlg, text=T("hint_ripristina"), wraplength=580, justify="left",
+                     font=ctk.CTkFont(size=11), text_color="gray").pack(padx=20)
+
+        map_path = {}
+
+        def _ripristina_file(path):
+            try:
+                qsos = leggi_qsos(path)
+            except Exception as ex:
+                messagebox.showerror(T("errore"), str(ex), parent=dlg)
+                return
+            if not messagebox.askyesno(
+                    T("ttl_ripristina"),
+                    T("msg_conferma_ripristino", n=len(qsos), f=os.path.basename(path)),
+                    parent=dlg):
+                return
+            self._push_undo()
+            self.qsos_caricati = qsos
+            self.qsos_filtrati = list(qsos)
+            self._log_modificato = True
+            self._aggiorna_tree()
+            dlg.destroy()
+            messagebox.showinfo(T("successo"),
+                                T("msg_ripristino_ok", n=len(qsos), f=os.path.basename(path)))
+
+        bb = ctk.CTkFrame(dlg, fg_color="transparent")
+        bb.pack(side="bottom", fill="x", padx=24, pady=(6, 14))
+
+        fr = ctk.CTkFrame(dlg, fg_color="transparent")
+        fr.pack(fill="both", expand=True, padx=20, pady=(8, 4))
+        cols = ("file", "qso", "data")
+        tv = _ttk.Treeview(fr, columns=cols, show="headings", height=10, selectmode="browse")
+        for c, txt, w, anc in [("file", "File", 320, "w"), ("qso", "QSO", 70, "center"),
+                               ("data", "Data", 150, "center")]:
+            tv.heading(c, text=txt)
+            tv.column(c, width=w, anchor=anc, stretch=(c == "file"))
+        sb = _ttk.Scrollbar(fr, orient="vertical", command=tv.yview)
+        tv.configure(yscrollcommand=sb.set)
+        tv.pack(side="left", fill="both", expand=True); sb.pack(side="right", fill="y")
+        for f in files:
+            n, mt = info_db(f)
+            iid = tv.insert("", "end", values=(
+                os.path.basename(f),
+                n if n is not None else "?",
+                _time.strftime("%d/%m/%Y %H:%M", _time.localtime(mt)) if mt else "?"))
+            map_path[iid] = f
+        if not files:
+            ctk.CTkLabel(dlg, text=T("msg_no_backup", p=folder), wraplength=580,
+                         text_color="gray", font=ctk.CTkFont(size=11)).pack(padx=20, pady=4)
+
+        def _ripristina_sel():
+            s = tv.selection()
+            if s:
+                _ripristina_file(map_path.get(s[0]))
+        tv.bind("<Double-1>", lambda e: _ripristina_sel())
+
+        def _sfoglia():
+            p = filedialog.askopenfilename(
+                title=T("ttl_ripristina"), initialdir=folder,
+                filetypes=[("Database", "*.sqlite *.bak*"), ("Tutti i file", "*.*")])
+            if p:
+                _ripristina_file(p)
+
+        ctk.CTkButton(bb, text=T("btn_ripristina"), command=_ripristina_sel, height=36,
+                      fg_color="#1f7a4d", hover_color="#18613c",
+                      font=ctk.CTkFont(size=12, weight="bold")
+                      ).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ctk.CTkButton(bb, text=T("btn_sfoglia_cart"), command=_sfoglia, height=36,
+                      width=150, fg_color=_BTN_ACT).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(bb, text=T("btn_chiudi"), command=dlg.destroy, height=36,
+                      width=90, fg_color="#718096").pack(side="left")
+
+    def _mirror_db_async(self, adif_path, qsos):
+        """Esegue il backup su DB (cartella dedicata / cloud) in un thread
+        separato, così il salvataggio non blocca l'interfaccia. Serializza i
+        backup con un lock (niente scritture concorrenti sullo stesso file)."""
+        import threading
+        if getattr(self, "_mirror_lock", None) is None:
+            self._mirror_lock = threading.Lock()
+        snap = list(qsos)   # istantanea: il thread non tocca la lista viva
+
+        def _run():
+            with self._mirror_lock:
+                ok = self._mirror_db(adif_path, snap)
+            try:
+                self.after(0, lambda: self._mirror_fine(ok))
+            except Exception:
+                pass
+
+        try:
+            if hasattr(self, 'lbl_status'):
+                self.lbl_status.configure(text=T("db_mirror_corso"), text_color="gray")
+        except Exception:
+            pass
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _mirror_fine(self, ok):
+        try:
+            if hasattr(self, 'lbl_status'):
+                self.lbl_status.configure(
+                    text=T("db_mirror_ok") if ok else T("db_mirror_ko"),
+                    text_color=("gray" if ok else TH.WARN_TEXT))
+        except Exception:
+            pass
+
+    def _mirror_db(self, adif_path, qsos):
+        """Copia di sicurezza del log in un database SQLite nella cartella
+        dedicata (<cartella_backup>/<profilo>.sqlite): scrittura atomica
+        (transazione + WAL) e backup a rotazione. Se punti la cartella backup
+        dentro Google Drive/Dropbox/OneDrive, la copia va anche in cloud.
+        Non blocca mai il salvataggio: se fallisce, ritorna False."""
+        try:
+            from utils.db import LogDB
+            folder = self._cartella_backup()
+            base = re.sub(r'[^A-Za-z0-9_-]', '',
+                          (self.profilo_attivo or
+                           os.path.splitext(os.path.basename(adif_path))[0])) or "log"
+            dbp = os.path.join(folder, base + ".sqlite")
+            db = LogDB(dbp)
+            db.sostituisci(qsos)
+            db.backup_rotante()
+            db.close()
+            return True
+        except Exception:
+            return False
+
+    def _log_ufficiale_attivo(self):
+        """Path del log ufficiale del profilo attivo, o '' se non impostato."""
+        if not getattr(self, 'profilo_attivo', None):
+            return ""
+        try:
+            prof = self._carica_profili().get(self.profilo_attivo, {})
+            if not self._e_logger(prof):
+                return ""
+            return str(prof.get('log_path', '')).strip()
+        except Exception:
+            return ""
 
     def _chiedi_cartella_output(self, nome_file):
         """Chiede se usare cartella dedicata, poi restituisce il path completo."""
@@ -5524,6 +7360,296 @@ class ADIFtoPDFApp(ctk.CTk):
             messagebox.showwarning("Attenzione", T("warn_carica_prima"))
             return
         DuplicatiDialog(self, self)
+
+    def _grid_to_latlon(self, grid):
+        """Lat/Lon (centro campo) da un locatore Maidenhead, o None."""
+        g = str(grid).strip().upper()
+        if len(g) < 4 or not ('A' <= g[0] <= 'R') or not ('A' <= g[1] <= 'R'):
+            return None
+        if not (g[2].isdigit() and g[3].isdigit()):
+            return None
+        try:
+            lon = (ord(g[0]) - 65) * 20 - 180 + int(g[2]) * 2 + 1
+            lat = (ord(g[1]) - 65) * 10 - 90 + int(g[3]) + 0.5
+            return lat, lon
+        except Exception:
+            return None
+
+    def _cont_da_grid(self, grid):
+        """Continente APPROSSIMATO dal locatore (solo fallback quando il
+        prefisso non risolve). Ritorna il codice continente o ''."""
+        ll = self._grid_to_latlon(grid)
+        if not ll:
+            return ''
+        lat, lon = ll
+        if lat < -60:                       return ''      # Antartide (fuori WAC)
+        if lat >= 0 and -170 <= lon < -30:  return 'NA'
+        if lat < 15 and -90 <= lon < -30:   return 'SA'
+        if lat >= 35 and -30 <= lon < 40:   return 'EU'
+        if -40 <= lat < 37 and -30 <= lon < 60: return 'AF'
+        if -50 <= lat < 12 and 110 <= lon <= 180: return 'OC'
+        if lon >= 40 or lon < -170:         return 'AS'
+        return ''
+
+    def _paesi_dxcc(self):
+        """(elenco nomi paese ordinato, mappa nome→(dxcc, continente)).
+        Preferisce l'elenco completo delle entità DXCC attive (dxcc_countries);
+        ripiega sulla tabella prefissi se il modulo non c'è. Cache in memoria."""
+        cache = getattr(self, '_paesi_cache', None)
+        if cache:
+            return cache
+        m = {}
+        try:
+            from utils.dxcc_countries import DXCC_ENTITIES
+            for name, val in DXCC_ENTITIES.items():
+                m[name] = (str(val[0]), val[1])   # (dxcc, continente)
+        except Exception:
+            m = {}
+        if not m:
+            try:
+                from config import DXCC_PREFIX_TABLE
+            except Exception:
+                DXCC_PREFIX_TABLE = {}
+            for _pfx, val in DXCC_PREFIX_TABLE.items():
+                try:
+                    country, dxcc_code, cont = val
+                except Exception:
+                    continue
+                if country and country not in m:
+                    m[country] = (str(dxcc_code), cont)
+        cache = (sorted(m.keys()), m)
+        self._paesi_cache = cache
+        return cache
+
+    def _conferma_campi(self, qsos):
+        """Finestra per rivedere/confermare i campi dedotti dal nominativo
+        (Country/DXCC/Continente) sui QSO che ne sono privi. Applica solo alle
+        righe spuntate. Ritorna il numero di QSO aggiornati. Se non c'è nulla
+        da dedurre, non apre nulla e ritorna 0."""
+        import tkinter.ttk as _ttk
+        todo = []   # [q, keys_low, country, dxcc, cont, resolved, call, grid]
+        for q in qsos:
+            kl = {k.lower(): k for k in q.keys()}
+            ck = kl.get('country', 'country')
+            if str(q.get(ck, '')).strip():
+                continue
+            call = str(q.get(kl.get('call', 'call'), '')).upper()
+            grid = str(q.get(kl.get('gridsquare', 'gridsquare'), '')).upper()
+            ris = dxcc_da_nominativo(call)
+            if ris:
+                todo.append([q, kl, ris[0], ris[1], ris[2], True, call, grid])
+            else:
+                cg = self._cont_da_grid(grid)
+                if cg:   # prefisso non risolto ma il locatore dà il continente
+                    todo.append([q, kl, '?', '', cg, True, call, grid])
+                else:
+                    todo.append([q, kl, '?', '', '', False, call, grid])
+        if not todo:
+            return 0
+
+        dlg = ctk.CTkToplevel(self)
+        dlg.title(T("ttl_conf_campi"))
+        dlg.geometry("620x560")
+        dlg.transient(self); dlg.grab_set(); dlg.lift(); dlg.focus_force()
+        ctk.CTkLabel(dlg, text=T("ttl_conf_campi"),
+                     font=ctk.CTkFont(size=15, weight="bold")).pack(pady=(12, 2))
+        ctk.CTkLabel(dlg, text=T("lbl_conf_campi"), wraplength=560, justify="left",
+                     font=ctk.CTkFont(size=11), text_color="gray").pack(padx=20, anchor="w")
+
+        res_count = {'n': 0}
+        bb = ctk.CTkFrame(dlg, fg_color="transparent")
+        bb.pack(side="bottom", fill="x", padx=24, pady=(6, 12))
+        lbl = ctk.CTkLabel(dlg, text="", font=ctk.CTkFont(size=11), text_color="gray")
+        lbl.pack(side="bottom", pady=(2, 0))
+        br = ctk.CTkFrame(dlg, fg_color="transparent")
+        br.pack(side="bottom", pady=(2, 0))
+
+        fr = ctk.CTkFrame(dlg, fg_color="transparent")
+        fr.pack(fill="both", expand=True, padx=20, pady=6)
+        cols = ("sel", "call", "grid", "country", "dxcc", "cont")
+        tv = _ttk.Treeview(fr, columns=cols, show="headings", height=12, selectmode="none")
+        for c, txt, w, anc in [("sel", "✓", 34, "center"), ("call", "Call", 96, "w"),
+                               ("grid", "Grid", 56, "center"),
+                               ("country", "Country", 180, "w"), ("dxcc", "DXCC", 54, "center"),
+                               ("cont", "Cont.", 50, "center")]:
+            tv.heading(c, text=txt)
+            tv.column(c, width=w, anchor=anc, stretch=(c == "country"))
+        sb = _ttk.Scrollbar(fr, orient="vertical", command=tv.yview)
+        tv.configure(yscrollcommand=sb.set)
+        tv.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+
+        incl = {}
+        for i, row in enumerate(todo):
+            _q, _kl, country, dxcc, cont, res, call, grid = row
+            incl[i] = res
+            tv.insert("", "end", iid=str(i),
+                      values=("\u2611" if res else "\u2610", call, grid, country, dxcc, cont))
+
+        def _upd():
+            m = sum(1 for t in todo if t[5])
+            n = sum(1 for i, v in incl.items() if v and todo[i][5])
+            lbl.configure(text=T("lbl_selezionati", n=n, m=m))
+
+        def _toggle(ev):
+            iid = tv.identify_row(ev.y)
+            if not iid:
+                return
+            i = int(iid)
+            if not todo[i][5]:
+                return
+            incl[i] = not incl[i]
+            tv.set(iid, "sel", "\u2611" if incl[i] else "\u2610")
+            _upd()
+
+        def _tutti(v):
+            for i in incl:
+                if todo[i][5]:
+                    incl[i] = v
+                    tv.set(str(i), "sel", "\u2611" if v else "\u2610")
+            _upd()
+
+        def _edit_row(ev):
+            iid = tv.identify_row(ev.y)
+            if not iid:
+                return
+            i = int(iid)
+            row = todo[i]
+            d2 = ctk.CTkToplevel(dlg)
+            d2.title(T("ttl_edit_campi"))
+            d2.geometry("380x500")
+            d2.transient(dlg); d2.grab_set(); d2.lift()
+            ctk.CTkLabel(d2, text=f"{row[6]}   (grid {row[7] or '—'})",
+                         font=ctk.CTkFont(size=13, weight="bold")).pack(pady=(14, 6))
+            import tkinter as _tk
+            import tkinter.ttk as _ttk2
+            names, cmap = self._paesi_dxcc()
+
+            # Country: campo di ricerca + lista filtrata con scrollbar
+            ctk.CTkLabel(d2, text="Country — digita per filtrare:", anchor="w",
+                         font=ctk.CTkFont(size=11)).pack(fill="x", padx=20)
+            e_c = ctk.CTkEntry(d2, width=330, placeholder_text="cerca paese…")
+            e_c.pack(padx=20, pady=(0, 4))
+            lf = ctk.CTkFrame(d2, fg_color="transparent")
+            lf.pack(padx=20, fill="both", expand=True)
+            lb = _tk.Listbox(lf, height=9, activestyle="none", exportselection=False,
+                             bg="#1a222c", fg="#dbe3ec", selectbackground="#2f6fb0",
+                             selectforeground="#ffffff", highlightthickness=0, borderwidth=0,
+                             font=("Segoe UI", 10))
+            sbl = _ttk2.Scrollbar(lf, orient="vertical", command=lb.yview)
+            lb.configure(yscrollcommand=sbl.set)
+            lb.pack(side="left", fill="both", expand=True)
+            sbl.pack(side="right", fill="y")
+
+            frm = ctk.CTkFrame(d2, fg_color="transparent"); frm.pack(padx=20, fill="x", pady=(4, 0))
+            def _campo(lbl, val):
+                r = ctk.CTkFrame(frm, fg_color="transparent"); r.pack(fill="x", pady=3)
+                ctk.CTkLabel(r, text=lbl, width=70, anchor="e").pack(side="left", padx=(0, 8))
+                e = ctk.CTkEntry(r, width=230); e.pack(side="left")
+                if val and val != '?':
+                    e.insert(0, val)
+                return e
+            e_d = _campo("DXCC", row[3])
+            e_o = _campo("Cont.", row[4])
+
+            def _fill(lst):
+                lb.delete(0, "end")
+                for n in lst:
+                    lb.insert("end", n)
+            def _on_key(_ev=None):
+                q = e_c.get().strip().lower()
+                _fill([n for n in names if q in n.lower()] if q else names)
+            def _on_sel(_ev=None):
+                s = lb.curselection()
+                if not s:
+                    return
+                n = lb.get(s[0])
+                e_c.delete(0, 'end'); e_c.insert(0, n)
+                info = cmap.get(n)
+                if info:
+                    e_d.delete(0, 'end'); e_d.insert(0, info[0])
+                    e_o.delete(0, 'end'); e_o.insert(0, info[1])
+            e_c.bind("<KeyRelease>", _on_key)
+            lb.bind("<<ListboxSelect>>", _on_sel)
+            if row[2] and row[2] != '?':
+                e_c.insert(0, row[2])
+            _on_key()
+
+            def _ok():
+                c = e_c.get().strip()
+                dx = e_d.get().strip()
+                co = e_o.get().strip().upper()
+                row[2] = c or '?'
+                row[3] = dx
+                row[4] = co
+                row[5] = bool(c or co or dx)   # ora applicabile
+                incl[i] = row[5]
+                tv.item(str(i), values=(
+                    "\u2611" if incl[i] else "\u2610",
+                    row[6], row[7], row[2], row[3], row[4]))
+                _upd(); d2.destroy()
+
+            bb2 = ctk.CTkFrame(d2, fg_color="transparent")
+            bb2.pack(side="bottom", fill="x", padx=20, pady=(6, 14))
+            ctk.CTkButton(bb2, text="OK", command=_ok, height=32, fg_color="#1f7a4d",
+                          hover_color="#18613c").pack(side="left", expand=True, fill="x", padx=(0, 6))
+            ctk.CTkButton(bb2, text=T("btn_annulla"), command=d2.destroy, height=32,
+                          width=90, fg_color="#718096").pack(side="left")
+            dlg.wait_window(d2)
+
+        tv.bind("<Button-1>", _toggle)
+        tv.bind("<Double-1>", _edit_row)
+        ctk.CTkButton(br, text=T("btn_tutti"), width=70, height=24,
+                      command=lambda: _tutti(True)).pack(side="left", padx=3)
+        ctk.CTkButton(br, text=T("btn_nessuno"), width=70, height=24,
+                      fg_color="#718096", command=lambda: _tutti(False)).pack(side="left", padx=3)
+        _upd()
+
+        def _applica():
+            n = 0
+            for i, row in enumerate(todo):
+                q, kl, country, dxcc, cont, resolved, _call, _grid = row
+                if resolved and incl.get(i):
+                    if country and country != '?':
+                        q[kl.get('country', 'country')] = country
+                    if dxcc:
+                        q[kl.get('dxcc', 'dxcc')] = dxcc
+                    if cont:
+                        q[kl.get('cont', 'cont')] = cont
+                    n += 1
+            res_count['n'] = n
+            dlg.destroy()
+
+        ctk.CTkButton(bb, text=T("btn_applica"), command=_applica, height=36,
+                      fg_color="#1f7a4d", hover_color="#18613c",
+                      font=ctk.CTkFont(size=12, weight="bold")
+                      ).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ctk.CTkButton(bb, text=T("btn_chiudi"), command=dlg.destroy, height=36,
+                      width=100, fg_color="#718096").pack(side="left")
+
+        self.wait_window(dlg)
+        return res_count['n']
+
+    def _arricchisci_country(self, qsos):
+        """Deduce Country/DXCC/Continente dal nominativo per i QSO che non li
+        hanno (tipico di FT8/WSJT-X e contest). Non sovrascrive valori
+        esistenti. Ritorna il numero di QSO arricchiti."""
+        n = 0
+        for q in qsos:
+            keys_low = {k.lower(): k for k in q.keys()}
+            ck = keys_low.get('country', 'country')
+            if str(q.get(ck, '')).strip():
+                continue
+            call = q.get(keys_low.get('call', 'call'), '')
+            ris = dxcc_da_nominativo(call)
+            if not ris:
+                continue
+            country, dxcc_code, cont = ris
+            q[ck] = country
+            q[keys_low.get('dxcc', 'dxcc')] = dxcc_code
+            q[keys_low.get('cont', 'cont')] = cont
+            n += 1
+        return n
 
     def deduci_country_da_nominativo(self):
         """Per i QSO con COUNTRY assente o vuoto, deduce Country, DXCC e
@@ -5623,6 +7749,85 @@ class ADIFtoPDFApp(ctk.CTk):
 
 
     # ── Cloudlog upload ────────────────────────
+    def _salva_sync_flags(self, flags):
+        try:
+            profili = self._carica_profili()
+            if self.profilo_attivo and self.profilo_attivo in profili:
+                profili[self.profilo_attivo]['sync_flags'] = flags
+                with open(self.profili_path, 'w', encoding='utf-8') as f:
+                    json.dump(profili, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def apri_sync_completo(self):
+        """Finestra unica: scegli quali sincronizzazioni fare (upload/download),
+        poi apre in sequenza le finestre dei servizi selezionati."""
+        if not self.qsos_caricati:
+            messagebox.showwarning(T("attenzione"), T("warn_carica_prima"))
+            return
+        profili = self._carica_profili()
+        dati = profili.get(self.profilo_attivo, {}) if self.profilo_attivo else {}
+        flags = dati.get('sync_flags', {})
+        if not isinstance(flags, dict):
+            flags = {}
+        azioni = [
+            ("up_cloudlog", "menu_cloudlog_upload", self.apri_cloudlog_upload, "up"),
+            ("up_clublog",  "menu_clublog_upload",  self.apri_clublog_upload,  "up"),
+            ("up_lotw",     "menu_lotw_upload",     self.apri_lotw_upload,     "up"),
+            ("up_eqsl",     "menu_eqsl_upload",     self.apri_eqsl_upload,     "up"),
+            ("dl_lotw",     "menu_allinea_lotw",    self.apri_lotw_allinea,    "dl"),
+            ("dl_eqsl",     "menu_eqsl_download",   self.apri_eqsl_download,   "dl"),
+        ]
+        dlg = ctk.CTkToplevel(self)
+        dlg.title(T("sync_titolo"))
+        dlg.geometry("440x460")
+        dlg.transient(self); dlg.grab_set(); dlg.lift(); dlg.focus_force()
+        ctk.CTkLabel(dlg, text=T("sync_titolo"),
+                     font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(14, 2))
+        ctk.CTkLabel(dlg, text=T("sync_hint"), wraplength=390, justify="left",
+                     font=ctk.CTkFont(size=11), text_color="gray").pack(padx=20, pady=(0, 6))
+
+        vars = {}
+        def _sezione(titolo, grp):
+            c = ctk.CTkFrame(dlg, corner_radius=10)
+            c.pack(fill="x", padx=16, pady=6)
+            ctk.CTkLabel(c, text=titolo, anchor="w",
+                         font=ctk.CTkFont(size=12, weight="bold"),
+                         text_color=("#2c7be5", "#5EA0E0")).pack(fill="x", padx=14, pady=(8, 2))
+            for k, lbl, fn, g in azioni:
+                if g != grp:
+                    continue
+                v = ctk.BooleanVar(value=bool(flags.get(k, True)))
+                vars[k] = v
+                ctk.CTkCheckBox(c, text=T(lbl), variable=v,
+                                font=ctk.CTkFont(size=11)).pack(anchor="w", padx=16, pady=3)
+            ctk.CTkFrame(c, fg_color="transparent", height=4).pack()
+
+        _sezione(T("sync_grp_up"), "up")
+        _sezione(T("sync_grp_dl"), "dl")
+
+        def _avvia():
+            sel = [(k, fn) for (k, lbl, fn, g) in azioni if vars[k].get()]
+            self._salva_sync_flags({k: v.get() for k, v in vars.items()})
+            if not sel:
+                messagebox.showinfo(T("sync_titolo"), T("sync_nessuno"), parent=dlg)
+                return
+            dlg.destroy()
+            # Apre in sequenza le finestre dei servizi selezionati
+            ritardo = 100
+            for _k, fn in sel:
+                self.after(ritardo, fn)
+                ritardo += 500
+
+        bb = ctk.CTkFrame(dlg, fg_color="transparent")
+        bb.pack(side="bottom", fill="x", padx=20, pady=(6, 14))
+        ctk.CTkButton(bb, text=T("sync_avvia"), command=_avvia, height=38,
+                      fg_color="#1f7a4d", hover_color="#18613c",
+                      font=ctk.CTkFont(size=13, weight="bold")
+                      ).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ctk.CTkButton(bb, text=T("btn_chiudi"), command=dlg.destroy, height=38,
+                      width=100, fg_color="#718096").pack(side="left")
+
     def apri_cloudlog_upload(self):
         if not self.qsos_caricati:
             messagebox.showwarning(T("attenzione"), T("warn_carica_prima"))
@@ -5713,6 +7918,19 @@ class ADIFtoPDFApp(ctk.CTk):
         default_call = dati.get('callsign', '').strip() or self.entry_owner.get().strip()
         LotwDownloadDialog(self, lw_user, lw_pass, default_call)
 
+    def apri_lotw_allinea(self):
+        """Apre la finestra 'Allinea log a LoTW' (backfill campi location)."""
+        profili = self._carica_profili()
+        dati = profili.get(self.profilo_attivo, {}) if self.profilo_attivo else {}
+        lw_user = dati.get('lotw_username', '').strip()
+        lw_pass = dati.get('lotw_password', '').strip()
+        if not (lw_user and lw_pass):
+            messagebox.showwarning(T("attenzione"), T("lwd_no_config"))
+            return
+        default_call = dati.get('callsign', '').strip() or self.entry_owner.get().strip()
+        AllineaLotwDialog(self, lw_user, lw_pass, default_call,
+                          profilo_nome=self.profilo_attivo)
+
     # ── eQSL download ──────────────────────────
     def apri_eqsl_download(self):
         profili = self._carica_profili()
@@ -5726,10 +7944,6 @@ class ADIFtoPDFApp(ctk.CTk):
         EqslDownloadDialog(self, eq_user, eq_pass, eq_qth)
 
     def apri_grafici(self):
-        if not self.qsos_caricati:
-            messagebox.showwarning("Attenzione", T("warn_carica_prima"))
-            return
-        GraficiDialog(self, self._qsos_attivi(), self.colori_pdf)
         if not self.qsos_caricati:
             messagebox.showwarning("Attenzione", T("warn_carica_prima"))
             return
@@ -5800,8 +8014,13 @@ class ADIFtoPDFApp(ctk.CTk):
             dlg.destroy()
             self.filepath = path
             try:
-                with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                    testo = f.read()
+                # Lettura robusta UTF-8 -> cp1252 (vedi _carica_adif_da_path)
+                with open(path, "rb") as f:
+                    _raw = f.read()
+                try:
+                    testo = _raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    testo = _raw.decode("cp1252", errors="replace")
                 testo = self._fix_adif(testo)
                 qsos = self._leggi_adif_sicuro(testo)
                 self.qsos_caricati = sorted(qsos, key=lambda x: (x.get('qso_date', ''), x.get('time_on', '')))
@@ -5849,19 +8068,80 @@ class ADIFtoPDFApp(ctk.CTk):
         self.entry_details.insert(0, profilo.get('locator',''))
         self.profilo_attivo = profilo.get('nome','')
         self.btn_profili.configure(text=self.profilo_attivo or '—')
+        self._aggiorna_titolo_modalita(profilo)
         # Lingua
         if profilo.get('lingua') and hasattr(self, '_set_lingua'):
             self._set_lingua(profilo['lingua'])
         # Tema
-        if profilo.get('tema') and profilo.get('pref_ricorda_tema', True):
+        if profilo.get('tema'):
             tema = profilo['tema']
             if tema != ctk.get_appearance_mode():
                 ctk.set_appearance_mode(tema)
+                # Il cambio tema a finestra aperta può de-massimizzarla: ri-estendo.
+                try:
+                    self.after(200, self._massimizza)
+                except Exception:
+                    pass
         # Colora righe
         if hasattr(self, 'var_colora_righe'):
             self.var_colora_righe.set(bool(profilo.get('pref_colora_righe', True)))
             if hasattr(self, 'qsos_caricati') and self.qsos_caricati:
                 self._aggiorna_tree()
+
+        # Vista Logger: 'recenti in alto' attivo di default; Editor: cronologico.
+        _is_logger = self._e_logger(profilo)
+        _lp = str(profilo.get('log_path', '')).strip() if _is_logger else ''
+        if hasattr(self, 'var_ordine_inv'):
+            self.var_ordine_inv.set(_is_logger)
+            self._ordine_inverso = _is_logger
+        if hasattr(self, 'var_limite500'):
+            # In Logger mostra solo le 500 più recenti: la griglia si disegna
+            # subito anche con log enormi (il log intero resta in memoria).
+            self.var_limite500.set(_is_logger)
+            self._limite_vista = 500 if _is_logger else 0
+
+        # Log ufficiale: caricalo allo switch SOLO per i profili Logger.
+        if _lp:
+            if os.path.exists(_lp):
+                self._carica_adif_da_path(_lp)   # rigenera la griglia (già invertita)
+            elif hasattr(self, 'lbl_status'):
+                self.lbl_status.configure(
+                    text=T("warn_log_nf", p=_lp),
+                    text_color=TH.WARN_TEXT)
+        elif self.qsos_caricati:
+            self._aggiorna_tree()   # nessun auto-load: applica subito il nuovo ordine
+
+    def _aggiorna_titolo_modalita(self, profilo=None):
+        """Aggiorna la barra del titolo e il badge con la modalità del profilo
+        attivo (Editor/Logger), così è sempre evidente 'dove sei'."""
+        try:
+            dati = profilo
+            if dati is None:
+                dati = self._carica_profili().get(self.profilo_attivo, {})
+            logger = self._e_logger(dati)
+        except Exception:
+            logger = False
+        prof = self.profilo_attivo or (dati or {}).get('callsign', '') or 'IW1FZR'
+        modo = "LOGGER" if logger else "EDITOR"
+        try:
+            self.title(f"{APP_TITOLO}  ·  {prof}  —  {modo}")
+        except Exception:
+            pass
+        if hasattr(self, 'lbl_modalita'):
+            if logger:
+                self.lbl_modalita.configure(text="● LOGGER", fg_color="#1f7a4d",
+                                            text_color="#ffffff")
+            else:
+                self.lbl_modalita.configure(text="● EDITOR", fg_color="#4A5568",
+                                            text_color="#e8edf2")
+
+    def _e_logger(self, dati):
+        """True se il profilo è di tipo Logger (legato al log ufficiale).
+        Fallback migrazione: senza campo 'tipo', è Logger se ha un log_path."""
+        tipo = str((dati or {}).get('tipo', '')).strip().lower()
+        if tipo:
+            return tipo == 'logger'
+        return bool(str((dati or {}).get('log_path', '')).strip())
 
     def _carica_profili(self):
         """Carica il file profili multipli."""
@@ -5895,9 +8175,25 @@ class ADIFtoPDFApp(ctk.CTk):
         scroll = ctk.CTkScrollableFrame(dlg, fg_color="transparent")
         scroll.pack(fill="both", expand=True, padx=4, pady=(0,4))
 
+        # Tipo profilo: Logger (legato al log ufficiale) o Editor (libero).
+        tipo_row = ctk.CTkFrame(scroll, fg_color="transparent")
+        tipo_row.pack(fill="x", padx=16, pady=(4, 2))
+        ctk.CTkLabel(tipo_row, text=T("lbl_tipo_profilo"), width=140, anchor="e",
+                     font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 8))
+        _tipo_def = (dati or {}).get('tipo') or (
+            "Logger" if str((dati or {}).get('log_path', '')).strip() else "Editor")
+        _tipo_var = ctk.StringVar(value=_tipo_def)
+        ctk.CTkSegmentedButton(tipo_row, values=["Editor", "Logger"],
+                               variable=_tipo_var, width=200).pack(side="left")
+        ctk.CTkLabel(scroll,
+                     text=T("hint_tipo_profilo"),
+                     font=ctk.CTkFont(size=10), text_color="gray",
+                     wraplength=380, justify="left").pack(padx=16, pady=(0, 6), anchor="w")
+
         CAMPI = [
             ("nome",     T("profilo_nome"),     "es. IW1FZR Home"),
             ("callsign", T("profilo_callsign"), "es. IW1FZR"),
+            ("log_path", "Log ufficiale (ADIF)", r"es. C:\log\principale.adi"),
             ("locator",  T("profilo_locator"),  "es. JN45bj"),
             ("nome_op",  T("profilo_nome_op"),  "es. Luca"),
             ("qth",      T("profilo_qth"),      "es. Cavaglià (BI)"),
@@ -5918,6 +8214,8 @@ class ADIFtoPDFApp(ctk.CTk):
             ("eqsl_qth_nickname", T("profilo_eq_qth"), "es. HOME (lascia vuoto se unico QTH)"),
             ("hamqth_username", T("profilo_hqth_user"), "es. IW1FZR"),
             ("hamqth_password", T("profilo_hqth_pass"), "Password HamQTH"),
+            ("qrz_username", T("profilo_qrz_user"), "es. IW1FZR"),
+            ("qrz_password", T("profilo_qrz_pass"), "Password QRZ.com"),
             ("qo100_api_key",   T("profilo_qo100_key"), "API Key da qo100dx.club/profile"),
             ("qo100_my_grid",   T("profilo_qo100_grid"), "es. JN45bj"),
         ]
@@ -5927,12 +8225,22 @@ class ADIFtoPDFApp(ctk.CTk):
             row.pack(fill="x", padx=16, pady=3)
             ctk.CTkLabel(row, text=lbl, width=140, anchor="e",
                          font=ctk.CTkFont(size=11)).pack(side="left", padx=(0,8))
-            show_char = "*" if key in ("clublog_password", "eqsl_password", "lotw_password", "hamqth_password") else None
+            show_char = "*" if key in ("clublog_password", "eqsl_password", "lotw_password", "hamqth_password", "qrz_password") else None
             e = ctk.CTkEntry(row, width=200, placeholder_text=ph, show=show_char)
             if dati and dati.get(key):
                 e.insert(0, dati[key])
             e.pack(side="left")
             entries[key] = e
+            if key == "log_path":
+                def _sfoglia_log(ent=e):
+                    p = filedialog.askopenfilename(
+                        title="Seleziona il log ADIF ufficiale del profilo",
+                        filetypes=[("File ADIF", "*.adi *.adif"),
+                                   ("Tutti i file", "*.*")])
+                    if p:
+                        ent.delete(0, 'end'); ent.insert(0, p)
+                ctk.CTkButton(row, text=T("lw_sfoglia"), width=70, height=26,
+                              command=_sfoglia_log, fg_color="#4A5568").pack(side="left", padx=(6,0))
             if key == "lotw_tqsl_path":
                 def _sfoglia_tqsl(ent=e):
                     p = filedialog.askopenfilename(
@@ -5950,8 +8258,14 @@ class ADIFtoPDFApp(ctk.CTk):
             if not nome or not call:
                 messagebox.showwarning("Attenzione", "Nome profilo e Callsign sono obbligatori.")
                 return
-            result[0] = {k: entries[k].get().strip() for k in entries}
-            result[0]['callsign'] = result[0]['callsign'].upper()
+            # Parto dai dati esistenti (preserva chiavi non mostrate: default,
+            # last_qsl, preferenze, impostazioni OmniRig, preset allineamento…)
+            # e sovrascrivo solo i campi del form.
+            base = dict(dati) if dati else {}
+            base.update({k: entries[k].get().strip() for k in entries})
+            base['callsign'] = base.get('callsign', '').upper()
+            base['tipo'] = _tipo_var.get()
+            result[0] = base
             dlg.destroy()
 
         frame_btn = ctk.CTkFrame(dlg, fg_color="transparent")
@@ -6104,8 +8418,12 @@ class ADIFtoPDFApp(ctk.CTk):
             if tb_id not in self._tb1_disponibili or tb_id in disattivati:
                 continue
             text, cmd, tip, color, emoji = self._tb1_disponibili[tb_id]
-            # Testo coerente con la lingua corrente (emoji + traduzione)
-            self._tb_btn1_factory(self._tb_wrap, emoji + T(tb_id), cmd, tip, color, tb_id, emoji)
+            # Etichetta: traduzione se c'è, altrimenti il testo del dizionario
+            # (evita di mostrare la chiave minuscola se manca la traduzione).
+            _lab = T(tb_id)
+            if _lab == tb_id:
+                _lab = text[len(emoji):] if text.startswith(emoji) else text
+            self._tb_btn1_factory(self._tb_wrap, emoji + _lab, cmd, tip, color, tb_id, emoji)
 
     def _ricostruisci_toolbar2_wrap(self):
         """Ricostruisce la sezione riga-2 nella WrapToolbar."""
@@ -6120,8 +8438,11 @@ class ADIFtoPDFApp(ctk.CTk):
             if tb_id not in self._tb2_disponibili or tb_id in disattivati:
                 continue
             text, cmd, tip, color, emoji = self._tb2_disponibili[tb_id]
-            # Testo coerente con la lingua corrente (emoji + traduzione)
-            self._tb_btn2_factory(self._tb_wrap, emoji + T(tb_id), cmd, tip, color, tb_id, emoji)
+            # Etichetta: traduzione se c'è, altrimenti il testo del dizionario.
+            _lab = T(tb_id)
+            if _lab == tb_id:
+                _lab = text[len(emoji):] if text.startswith(emoji) else text
+            self._tb_btn2_factory(self._tb_wrap, emoji + _lab, cmd, tip, color, tb_id, emoji)
 
     def _ricostruisci_toolbar1(self):
         """Compatibilità: ricostruisce l'intera WrapToolbar."""
@@ -6132,6 +8453,12 @@ class ADIFtoPDFApp(ctk.CTk):
                              fg_color=("#B0BBC8","#2A2A2A"))
             self._tb_wrap.add(s, is_sep=True)
             self._ricostruisci_toolbar2_wrap()
+            # Ricalcola il layout una volta che i pulsanti hanno una larghezza
+            # reale (evita sovrapposizioni all'avvio).
+            try:
+                self._tb_wrap.after(80, self._tb_wrap._relayout)
+            except Exception:
+                pass
 
     def _ricostruisci_toolbar2(self):
         self._ricostruisci_toolbar1()
@@ -6248,7 +8575,8 @@ class ADIFtoPDFApp(ctk.CTk):
 
     def _ordine_toolbar1(self):
         """Restituisce l'ordine/visibilità dei pulsanti tb1 dal profilo."""
-        default = ["apri_adif","unisci","importa_cbr","salva_adif",
+        default = ["apri_adif","importa_adif","unisci","importa_cbr",
+                   "salva_adif","esporta_adif",
                    "aggiungi_qso","filtri_qso","duplicati","deduci_country"]
         try:
             profili = self._carica_profili()
@@ -6675,8 +9003,9 @@ class ADIFtoPDFApp(ctk.CTk):
 
         dlg = ctk.CTkToplevel(self)
         dlg.title(T("pref_titolo"))
-        dlg.geometry("460x500")
-        dlg.resizable(False, True)
+        dlg.geometry("480x560")
+        dlg.resizable(True, True)
+        dlg.minsize(440, 460)
         dlg.grab_set(); dlg.lift(); dlg.focus_force()
 
         ctk.CTkLabel(dlg, text=T("pref_head", prof=self.profilo_attivo),
@@ -6684,71 +9013,67 @@ class ADIFtoPDFApp(ctk.CTk):
         ctk.CTkLabel(dlg, text=T("pref_sub"),
                      font=ctk.CTkFont(size=10), text_color="gray").pack(pady=(0,12))
 
-        frame = ctk.CTkFrame(dlg, fg_color="transparent")
-        frame.pack(fill="both", expand=True, padx=24)
+        frame = ctk.CTkScrollableFrame(dlg, fg_color="transparent")
+        frame.pack(fill="both", expand=True, padx=16, pady=(0, 4))
 
+        def _card(titolo):
+            c = ctk.CTkFrame(frame, corner_radius=10)
+            c.pack(fill="x", pady=(6, 4))
+            ctk.CTkLabel(c, text=titolo, anchor="w",
+                         font=ctk.CTkFont(size=12, weight="bold"),
+                         text_color=("#2c7be5", "#5EA0E0")).pack(fill="x", padx=14, pady=(10, 2))
+            b = ctk.CTkFrame(c, fg_color="transparent")
+            b.pack(fill="x", padx=14, pady=(0, 10))
+            return b
+
+        # ── Avvio ──
+        c1 = _card(T("pref_grp_avvio"))
         var_ultimo_log = ctk.BooleanVar(value=bool(dati.get('pref_apri_ultimo_log', False)))
-        ctk.CTkCheckBox(frame, text=T("pref_apri_ultimo"),
-                        variable=var_ultimo_log,
-                        font=ctk.CTkFont(size=11)).pack(anchor="w", pady=6)
-
+        ctk.CTkCheckBox(c1, text=T("pref_apri_ultimo"), variable=var_ultimo_log,
+                        font=ctk.CTkFont(size=11)).pack(anchor="w", pady=4)
         ultimo_path = dati.get('ultimo_log_path', '')
-        ctk.CTkLabel(frame,
-                     text=f"Ultimo log: {os.path.basename(ultimo_path) if ultimo_path else '(nessuno ancora)'}",
-                     font=ctk.CTkFont(size=9), text_color=TH.LINK).pack(anchor="w", padx=(24,0), pady=(0,12))
-
+        ctk.CTkLabel(c1, text=f"{T('pref_ultimo_log_lbl')} "
+                              f"{os.path.basename(ultimo_path) if ultimo_path else T('pref_nessuno')}",
+                     font=ctk.CTkFont(size=9), text_color=TH.LINK).pack(anchor="w", padx=(26, 0), pady=(0, 6))
         var_controllo = ctk.BooleanVar(value=bool(
-            self.var_controllo_post_apertura.get() if hasattr(self,'var_controllo_post_apertura') else False))
-        ctk.CTkCheckBox(frame, text=T("pref_controlla"),
-                        variable=var_controllo,
-                        font=ctk.CTkFont(size=11)).pack(anchor="w", pady=6)
-
+            self.var_controllo_post_apertura.get() if hasattr(self, 'var_controllo_post_apertura') else False))
+        ctk.CTkCheckBox(c1, text=T("pref_controlla"), variable=var_controllo,
+                        font=ctk.CTkFont(size=11)).pack(anchor="w", pady=4)
         var_default_profilo = ctk.BooleanVar(value=bool(dati.get('default', False)))
-        ctk.CTkCheckBox(frame, text=T("pref_predefinito"),
-                        variable=var_default_profilo,
-                        font=ctk.CTkFont(size=11)).pack(anchor="w", pady=6)
+        ctk.CTkCheckBox(c1, text=T("pref_predefinito"), variable=var_default_profilo,
+                        font=ctk.CTkFont(size=11)).pack(anchor="w", pady=4)
 
-        var_ricorda_tema = ctk.BooleanVar(value=bool(dati.get('pref_ricorda_tema', True)))
-        ctk.CTkCheckBox(frame, text=T("pref_ricorda_tema"),
-                        variable=var_ricorda_tema,
-                        font=ctk.CTkFont(size=11)).pack(anchor="w", pady=6)
-
-        var_colora_righe = ctk.BooleanVar(value=self.var_colora_righe.get())
-        ctk.CTkCheckBox(frame, text=T("pref_colora_righe"),
-                        variable=var_colora_righe,
-                        font=ctk.CTkFont(size=11)).pack(anchor="w", pady=6)
-
-        # ── Lingua e Tema ──
-        ctk.CTkLabel(frame, text="──────────────────────────────",
-                     font=ctk.CTkFont(size=9), text_color="gray").pack(anchor="w", pady=(8,2))
-
-        frame_lingua = ctk.CTkFrame(frame, fg_color="transparent")
-        frame_lingua.pack(anchor="w", pady=4, fill="x")
-        ctk.CTkLabel(frame_lingua, text=T("pref_lingua"), width=80,
+        # ── Aspetto ──
+        c2 = _card(T("pref_grp_aspetto"))
+        rt = ctk.CTkFrame(c2, fg_color="transparent"); rt.pack(anchor="w", fill="x", pady=3)
+        ctk.CTkLabel(rt, text=T("pref_tema"), width=80, anchor="w",
+                     font=ctk.CTkFont(size=11)).pack(side="left")
+        var_tema = ctk.StringVar(value=dati.get('tema', 'System'))
+        ctk.CTkRadioButton(rt, text=T("pref_system"), variable=var_tema, value="System",
+                           font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 12))
+        ctk.CTkRadioButton(rt, text=T("pref_dark"), variable=var_tema, value="Dark",
+                           font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 12))
+        ctk.CTkRadioButton(rt, text=T("pref_light"), variable=var_tema, value="Light",
+                           font=ctk.CTkFont(size=11)).pack(side="left")
+        rl = ctk.CTkFrame(c2, fg_color="transparent"); rl.pack(anchor="w", fill="x", pady=3)
+        ctk.CTkLabel(rl, text=T("pref_lingua"), width=80, anchor="w",
                      font=ctk.CTkFont(size=11)).pack(side="left")
         var_lingua = ctk.StringVar(value=dati.get('lingua', 'IT'))
-        ctk.CTkRadioButton(frame_lingua, text=T("menu_italiano"), variable=var_lingua, value="IT",
-                           font=ctk.CTkFont(size=11)).pack(side="left", padx=(0,12))
-        ctk.CTkRadioButton(frame_lingua, text=T("menu_english"), variable=var_lingua, value="EN",
+        ctk.CTkRadioButton(rl, text=T("menu_italiano"), variable=var_lingua, value="IT",
+                           font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 12))
+        ctk.CTkRadioButton(rl, text=T("menu_english"), variable=var_lingua, value="EN",
                            font=ctk.CTkFont(size=11)).pack(side="left")
 
-        frame_tema = ctk.CTkFrame(frame, fg_color="transparent")
-        frame_tema.pack(anchor="w", pady=4, fill="x")
-        ctk.CTkLabel(frame_tema, text=T("pref_tema"), width=80,
-                     font=ctk.CTkFont(size=11)).pack(side="left")
-        tema_corrente = ctk.get_appearance_mode()
-        var_tema = ctk.StringVar(value=tema_corrente)
-        ctk.CTkRadioButton(frame_tema, text=T("pref_dark"), variable=var_tema, value="Dark",
-                           font=ctk.CTkFont(size=11)).pack(side="left", padx=(0,12))
-        ctk.CTkRadioButton(frame_tema, text=T("pref_light"), variable=var_tema, value="Light",
-                           font=ctk.CTkFont(size=11)).pack(side="left")
+        var_colora_righe = ctk.BooleanVar(value=self.var_colora_righe.get())
+        ctk.CTkCheckBox(c2, text=T("pref_colora_righe"), variable=var_colora_righe,
+                        font=ctk.CTkFont(size=11)).pack(anchor="w", pady=4)
 
         def _salva():
             profili2 = self._carica_profili()
             if self.profilo_attivo not in profili2:
                 dlg.destroy(); return
             profili2[self.profilo_attivo]['pref_apri_ultimo_log'] = var_ultimo_log.get()
-            profili2[self.profilo_attivo]['pref_ricorda_tema'] = var_ricorda_tema.get()
+            profili2[self.profilo_attivo]['pref_ricorda_tema'] = True
             profili2[self.profilo_attivo]['pref_colora_righe'] = var_colora_righe.get()
             profili2[self.profilo_attivo]['lingua'] = var_lingua.get()
             profili2[self.profilo_attivo]['tema'] = var_tema.get()
@@ -6782,6 +9107,32 @@ class ADIFtoPDFApp(ctk.CTk):
                       side="left", expand=True, fill="x", padx=(0,6))
         ctk.CTkButton(frame_btn, text=T("cm_annulla"), command=dlg.destroy,
                       height=34, width=100, fg_color="#718096").pack(side="left")
+
+    def imposta_log_ufficiale(self):
+        """Scorciatoia visibile per impostare/cambiare il log ufficiale ADIF del
+        profilo attivo e aprirlo subito (stesso effetto del campo nel profilo)."""
+        if not self.profilo_attivo:
+            messagebox.showinfo(T("hdr_log_uff"), T("msg_no_profilo_log"))
+            return
+        profili = self._carica_profili()
+        dati = profili.get(self.profilo_attivo)
+        if dati is None:
+            messagebox.showwarning(T("hdr_log_uff"), T("msg_profilo_nf"))
+            return
+        corrente = str(dati.get('log_path', '')).strip()
+        kw = {}
+        if corrente and os.path.isdir(os.path.dirname(corrente)):
+            kw['initialdir'] = os.path.dirname(corrente)
+        path = filedialog.askopenfilename(
+            title=T("ttl_log_uff_per", p=self.profilo_attivo),
+            filetypes=[("File ADIF", "*.adi *.adif"), ("Tutti i file", "*.*")], **kw)
+        if not path:
+            return
+        dati['log_path'] = path
+        dati['tipo'] = 'Logger'   # assegnare un log ufficiale rende il profilo un Logger
+        profili[self.profilo_attivo] = dati
+        self._salva_profili(profili)
+        self._carica_adif_da_path(path)
 
     def apri_gestione_profili(self):
         """Finestra di gestione profili multipli."""
@@ -6829,6 +9180,10 @@ class ADIFtoPDFApp(ctk.CTk):
                               fg_color=TH.WARNING_H,
                               command=lambda n=nome: elimina(n)
                               ).pack(side="right", padx=2, pady=4)
+                ctk.CTkButton(row, text="Clona", width=50, height=26,
+                              fg_color="#4A5568",
+                              command=lambda n=nome: clona(n)
+                              ).pack(side="right", padx=2, pady=4)
 
         def nuovo():
             dati = self._dialog_profilo(dlg, T("profilo_nuovo"))
@@ -6842,11 +9197,16 @@ class ADIFtoPDFApp(ctk.CTk):
             nuovo_dati = self._dialog_profilo(dlg, T("profilo_modifica"), dati)
             if nuovo_dati:
                 p = self._carica_profili()
+                era_attivo = (nome == self.profilo_attivo)
                 if nuovo_dati['nome'] != nome:
                     del p[nome]
                 p[nuovo_dati['nome']] = nuovo_dati
                 self._salva_profili(p)
                 aggiorna_lista()
+                # Se ho modificato il profilo ATTIVO, lo ri-applico subito: così
+                # un 'Log ufficiale' appena impostato viene aperto all'istante.
+                if era_attivo:
+                    self._applica_profilo({**nuovo_dati, 'nome': nuovo_dati['nome']})
 
         def elimina(nome):
             if messagebox.askyesno("Elimina", f"Eliminare il profilo '{nome}'?"):
@@ -6857,6 +9217,19 @@ class ADIFtoPDFApp(ctk.CTk):
                     self.profilo_attivo = None
                     self.btn_profili.configure(text='—')
                 aggiorna_lista()
+
+        def clona(nome):
+            p = self._carica_profili()
+            try:
+                p, nuovo_nome = clona_profilo(p, nome)
+            except KeyError:
+                return
+            self._salva_profili(p)
+            aggiorna_lista()
+            messagebox.showinfo("Profilo clonato",
+                f"Creato '{nuovo_nome}' (log secondario).\n\n"
+                f"Aprilo con 'Modifica' e assegnagli il suo Log ufficiale (ADIF): "
+                f"identità e credenziali sono già copiate dal profilo di origine.")
 
         aggiorna_lista()
 
@@ -7067,6 +9440,7 @@ class ADIFtoPDFApp(ctk.CTk):
                 except Exception:
                     pass
                 self.btn_profili.configure(text=nome)
+                self._aggiorna_titolo_modalita(dati)
                 self.entry_owner.delete(0, 'end')
                 self.entry_owner.insert(0, dati.get('callsign',''))
                 self.entry_details.delete(0, 'end')
@@ -7076,24 +9450,47 @@ class ADIFtoPDFApp(ctk.CTk):
                 if dati.get('lingua'):
                     self._set_lingua(dati['lingua'])
 
-                # Tema (se preferenza abilitata)
-                if dati.get('pref_ricorda_tema', True) and dati.get('tema'):
+                # Tema salvato: applicato sempre (il radio in Preferenze è la scelta)
+                if dati.get('tema'):
                     if dati['tema'] != ctk.get_appearance_mode():
                         ctk.set_appearance_mode(dati['tema'])
                         self.after(100, self._aggiorna_colori_tree)
+                        self.after(250, self._massimizza)
 
                 # Colorazione righe
                 if hasattr(self, 'var_colora_righe'):
                     self.var_colora_righe.set(bool(dati.get('pref_colora_righe', True)))
 
-                # Toolbar personalizzata
+                # Toolbar personalizzata (un solo rebuild: toolbar1 ricostruisce
+                # entrambe le righe; evita il doppio passaggio all'avvio).
                 if hasattr(self, '_ricostruisci_toolbar1'):
                     self._ricostruisci_toolbar1()
-                if hasattr(self, '_ricostruisci_toolbar2'):
-                    self._ricostruisci_toolbar2()
+
+                # Log ufficiale: aprilo all'avvio SOLO per i profili Logger.
+                if hasattr(self, 'var_ordine_inv'):
+                    _lg = self._e_logger(dati)
+                    self.var_ordine_inv.set(_lg)
+                    self._ordine_inverso = _lg
+                    if hasattr(self, 'var_limite500'):
+                        self.var_limite500.set(_lg)
+                        self._limite_vista = 500 if _lg else 0
+                _official = dati.get('log_path', '') if self._e_logger(dati) else ''
+                if _official:
+                    def _apri_official(p=_official):
+                        try:
+                            if os.path.exists(p):
+                                self._carica_adif_da_path(p)
+                            else:
+                                self.lbl_status.configure(
+                                    text=f"⚠ Log profilo non trovato: {os.path.basename(p)}",
+                                    text_color=TH.WARN_TEXT)
+                        except Exception:
+                            pass
+                    self.after(300, _apri_official)
 
                 # Riapri ultimo log (protetto: chiavetta rimossa, path di rete morto…)
-                if dati.get('pref_apri_ultimo_log'):
+                # Solo se NON è stato aperto un log ufficiale (evita doppio caricamento).
+                if dati.get('pref_apri_ultimo_log') and not _official:
                     ultimo = dati.get('ultimo_log_path', '')
                     def _try_apri_ultimo(p=ultimo):
                         try:
@@ -7296,8 +9693,15 @@ class ADIFtoPDFApp(ctk.CTk):
         attivo, esegue il controllo automatico dei campi principali."""
         self.filepath = path
         try:
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                testo = f.read()
+            # Lettura robusta: molti ADIF (da altri logger) non sono UTF-8 ma
+            # Latin-1 / Windows-1252. Provo UTF-8, e se fallisce ripiego su
+            # cp1252 così gli accenti restano corretti.
+            with open(path, "rb") as f:
+                _raw = f.read()
+            try:
+                testo = _raw.decode("utf-8")
+            except UnicodeDecodeError:
+                testo = _raw.decode("cp1252", errors="replace")
             testo = self._fix_adif(testo)
             qsos, _ = adif_io.read_from_string(testo)
             self.qsos_caricati = sorted(qsos, key=lambda x: (x.get('qso_date', ''), x.get('time_on', '')))
@@ -8322,11 +10726,11 @@ class ADIFtoPDFApp(ctk.CTk):
         a("<!DOCTYPE html><html lang='it'>")
         a("<head><meta charset='UTF-8'>")
         a("<meta name='viewport' content='width=device-width,initial-scale=1'>")
-        a("<title>Log " + stazione_safe + " - ADIF FZR 2.5</title>")
+        a("<title>Log " + stazione_safe + " - ADIF FZR 2.6</title>")
         a("<style>" + css + "</style></head><body>")
         a("<div class='hdr'><div class='hdr-left'>")
         a("<h1>&#128251; Log " + stazione_safe + "</h1>")
-        a("<p>ADIF FZR 2.5 &nbsp;&middot;&nbsp; " + str(n_qso) + " QSO totali</p>")
+        a("<p>ADIF FZR 2.6 &nbsp;&middot;&nbsp; " + str(n_qso) + " QSO totali</p>")
         a("</div>")
         a("<button class='theme-btn' onclick='toggleTheme()' id='tbtn'>&#9790; Tema chiaro</button>")
         a("</div><div class='wrap'>")
@@ -8365,7 +10769,7 @@ class ADIFtoPDFApp(ctk.CTk):
         a("<th onclick='s(10)'>eQSL</th>")
         a("</tr></thead><tbody id='lb'></tbody></table>")
         a("<div class='nr' id='nr' style='display:none'>Nessun QSO trovato</div></div></div>")
-        a("<div class='ftr'>ADIF FZR 2.5 &middot; " + stazione_safe +
+        a("<div class='ftr'>ADIF FZR 2.6 &middot; " + stazione_safe +
           " &middot; " + str(n_qso) + " QSO</div>")
         # JavaScript
         js = (

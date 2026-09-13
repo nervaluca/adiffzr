@@ -2,9 +2,6 @@ import os
 import sys
 
 _this_dir = os.path.dirname(os.path.abspath(__file__))
-_target_pkg = r'C:\Users\nerva\Desktop\printlog\innosetup3.2\ADIF_FZR_Modular'
-if _target_pkg not in sys.path:
-    sys.path.insert(0, _target_pkg)
 if _this_dir not in sys.path:
     sys.path.insert(0, _this_dir)
 
@@ -293,6 +290,11 @@ class WSJTXListener(ctk.CTkToplevel):
 
     def _add_al_log(self, qso):
         q = {k: v for k, v in qso.items() if k not in ('qso_date_off','time_off')}
+        # FT8/WSJT-X non porta Country/DXCC: deducili dal nominativo.
+        try:
+            self.app_ref._arricchisci_country([q])
+        except Exception:
+            pass
         self.app_ref.qsos_caricati.append(q)
         self.app_ref._log_modificato = True
         self.app_ref.qsos_caricati.sort(key=lambda x: (

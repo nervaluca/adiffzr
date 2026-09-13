@@ -2,9 +2,6 @@ import os
 import sys
 
 _this_dir = os.path.dirname(os.path.abspath(__file__))
-_target_pkg = r'C:\Users\nerva\Desktop\printlog\innosetup3.2\ADIF_FZR_Modular'
-if _target_pkg not in sys.path:
-    sys.path.insert(0, _target_pkg)
 if _this_dir not in sys.path:
     sys.path.insert(0, _this_dir)
 
@@ -13,7 +10,7 @@ import customtkinter as ctk
 import theme as TH
 import calendar as _cal
 from datetime import datetime
-from config import T
+from config import T, LINGUA
 
 class _WrapToolbar(ctk.CTkFrame):
     """Toolbar adattiva: una riga che diventa due quando la finestra si stringe."""
@@ -31,7 +28,14 @@ class _WrapToolbar(ctk.CTkFrame):
 
     def clear(self):
         for w, _ in self._items:
-            try: w.pack_forget(); w.destroy()
+            # place_forget() serve quando i widget erano disposti in due righe
+            # (place): senza, restano visibili finché Tk non esegue destroy(),
+            # causando pulsanti "doppi" per qualche secondo all'avvio.
+            try: w.place_forget()
+            except Exception: pass
+            try: w.pack_forget()
+            except Exception: pass
+            try: w.destroy()
             except Exception: pass
         self._items.clear()
 
