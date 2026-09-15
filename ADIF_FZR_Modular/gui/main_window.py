@@ -46,6 +46,7 @@ from utils.tooltip import _tip
 from utils.log_profili import percorso_profili, migra_profili, clona_profilo, cartella_dati
 from radio.omnirig import OmniRigControl
 from radio.sdrconsole import SDRConsoleControl
+from radio.hamlib import HamlibControl
 from radio.bandplan import modo_da_bandplan
 from radio import sat_db as SATDB
 import theme as TH
@@ -425,6 +426,7 @@ class ADIFtoPDFApp(ctk.CTk):
         # Controllo radio via OmniRig (lazy: si connette solo quando serve)
         self._omnirig_reale = OmniRigControl()   # istanza OmniRig persistente
         self._sdrconsole = None                  # istanza SDR Console (se usata)
+        self._hamlib = None                      # istanza Hamlib/rigctld (se usata)
         self._radio_backend = "omnirig"          # "omnirig" o "sdrconsole"
         # self._omnirig è il riferimento che il display USA: punta al backend
         # attivo. Di default OmniRig; diventa SDRConsoleControl se selezionato.
@@ -1480,7 +1482,7 @@ class ADIFtoPDFApp(ctk.CTk):
         except Exception:
             pass
 
-    def _imposta_backend_radio(self, backend, porta_sdr=None):
+    def _imposta_backend_radio(self, backend, porta_sdr=None, hamlib_cfg=None):
         """Seleziona la sorgente del display radio: 'omnirig' o 'sdrconsole'.
         Il display usa self._omnirig, che qui viene fatto puntare al backend
         scelto. Grazie all'interfaccia comune, il resto dell'app non cambia."""
@@ -1492,6 +1494,24 @@ class ADIFtoPDFApp(ctk.CTk):
                 self._sdrconsole.imposta_porta(porta_sdr)
             self._omnirig = self._sdrconsole
             # Il nome radio si aggiorna al prossimo giro di polling
+            self._radio_nome_cache = None
+        elif backend == "hamlib":
+            cfg = hamlib_cfg or {}
+            if self._hamlib is None:
+                self._hamlib = HamlibControl(host=cfg.get("host", "127.0.0.1"),
+                                             port=cfg.get("port", 4532))
+            self._hamlib.imposta(host=cfg.get("host"), port=cfg.get("port"),
+                                 rigctld_path=cfg.get("rigctld_path"),
+                                 modello=cfg.get("modello"),
+                                 porta_seriale=cfg.get("porta_seriale"),
+                                 baud=cfg.get("baud"),
+                                 avvio_auto=cfg.get("avvio_auto"))
+            try:
+                import threading
+                threading.Thread(target=self._hamlib.connetti, daemon=True).start()
+            except Exception:
+                pass
+            self._omnirig = self._hamlib
             self._radio_nome_cache = None
         else:
             self._omnirig = self._omnirig_reale
@@ -8796,7 +8816,8 @@ class ADIFtoPDFApp(ctk.CTk):
 
         dlg = ctk.CTkToplevel(self)
         dlg.title(T("radio_titolo"))
-        dlg.geometry("560x420")
+        dlg.geometry("620x720")
+        dlg.minsize(580, 560)
         dlg.transient(self); dlg.lift(); dlg.focus_force()
         dlg.after(200, lambda: (dlg.lift(), dlg.focus_force()))
 
@@ -8806,8 +8827,8 @@ class ADIFtoPDFApp(ctk.CTk):
                      text_color="gray", wraplength=500,
                      justify="left").pack(pady=(0,10), padx=20)
 
-        frame = ctk.CTkFrame(dlg, fg_color="transparent")
-        frame.pack(fill="both", expand=True, padx=20)
+        frame = ctk.CTkScrollableFrame(dlg, fg_color="transparent")
+        frame.pack(fill="both", expand=True, padx=16, pady=(0, 4))
 
         # ── Sorgente radio: OmniRig o SDR Console ────────────────
         ctk.CTkLabel(frame, text=T("radio_sorgente_lbl"), anchor="w",
@@ -8828,6 +8849,87 @@ class ADIFtoPDFApp(ctk.CTk):
         e_sdrport.pack(side="left")
         if dati.get('sdr_porta'):
             e_sdrport.insert(0, dati['sdr_porta'])
+
+        # ── Hamlib (rigctld) ─────────────────────────────────────
+        ctk.CTkRadioButton(fr_src, text="Hamlib", variable=var_backend,
+                           value="hamlib", font=ctk.CTkFont(size=11)).pack(side="left", padx=(16, 0))
+        fr_hl = ctk.CTkFrame(frame, fg_color="transparent")
+        fr_hl.pack(fill="x", pady=(0, 10))
+        ctk.CTkLabel(fr_hl, text="Hamlib rigctld — host / porta:", anchor="w",
+                     font=ctk.CTkFont(size=11, weight="bold")).pack(fill="x", pady=(2, 2))
+        r1 = ctk.CTkFrame(fr_hl, fg_color="transparent"); r1.pack(fill="x", pady=(0, 4))
+        e_hl_host = ctk.CTkEntry(r1, width=120, placeholder_text="127.0.0.1")
+        e_hl_host.pack(side="left", padx=(0, 6))
+        e_hl_host.insert(0, dati.get('hamlib_host', '') or '127.0.0.1')
+        e_hl_port = ctk.CTkEntry(r1, width=70, placeholder_text="4532")
+        e_hl_port.pack(side="left")
+        e_hl_port.insert(0, str(dati.get('hamlib_port', '') or '4532'))
+        # avvio automatico di rigctld
+        var_hl_auto = ctk.BooleanVar(value=bool(dati.get('hamlib_avvio_auto', False)))
+        ctk.CTkCheckBox(fr_hl, text="Avvia rigctld automaticamente",
+                        variable=var_hl_auto, checkbox_width=16, checkbox_height=16,
+                        font=ctk.CTkFont(size=11)).pack(anchor="w", pady=(2, 4))
+        r2 = ctk.CTkFrame(fr_hl, fg_color="transparent"); r2.pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(r2, text="rigctld:", anchor="w",
+                     font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 6))
+        e_hl_exe = ctk.CTkEntry(r2, placeholder_text="percorso di rigctld(.exe)")
+        e_hl_exe.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        def _rileva_rigctld():
+            import glob, os as _os
+            cand = []
+            for base in [r"C:\Program Files", r"C:\Program Files (x86)"]:
+                cand += glob.glob(_os.path.join(base, "hamlib*", "bin", "rigctld.exe"))
+                cand += glob.glob(_os.path.join(base, "Hamlib*", "bin", "rigctld.exe"))
+            for pth in ["/usr/bin/rigctld", "/usr/local/bin/rigctld", "/opt/homebrew/bin/rigctld"]:
+                if _os.path.exists(pth):
+                    cand.append(pth)
+            return cand[0] if cand else ""
+
+        def _sfoglia_rigctld():
+            p2 = filedialog.askopenfilename(
+                title="Seleziona rigctld",
+                filetypes=[("rigctld", "rigctld*"), ("Eseguibili", "*.exe"), ("Tutti i file", "*.*")])
+            if p2:
+                e_hl_exe.delete(0, 'end'); e_hl_exe.insert(0, p2)
+
+        ctk.CTkButton(r2, text="Sfoglia", width=80,
+                      command=_sfoglia_rigctld).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(r2, text="Auto", width=54, fg_color="#4A5568", hover_color="#2D3748",
+                      command=lambda: (e_hl_exe.delete(0, 'end'),
+                                       e_hl_exe.insert(0, _rileva_rigctld()))).pack(side="left")
+
+        _hl_path0 = dati.get('hamlib_rigctld_path', '') or ''
+        if not _hl_path0:
+            _hl_path0 = _rileva_rigctld()   # pre-compila se lo trova
+        e_hl_exe.insert(0, _hl_path0)
+        r3 = ctk.CTkFrame(fr_hl, fg_color="transparent"); r3.pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(r3, text="Modello:", anchor="w",
+                     font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 6))
+        e_hl_model = ctk.CTkEntry(r3, width=90, placeholder_text="es. 3073")
+        e_hl_model.pack(side="left", padx=(0, 10))
+        e_hl_model.insert(0, str(dati.get('hamlib_modello', '') or ''))
+        ctk.CTkLabel(r3, text="Porta:", anchor="w",
+                     font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 6))
+        e_hl_ser = ctk.CTkEntry(r3, width=110, placeholder_text="COM5 / /dev/ttyUSB0")
+        e_hl_ser.pack(side="left", padx=(0, 10))
+        e_hl_ser.insert(0, dati.get('hamlib_porta_seriale', '') or '')
+        ctk.CTkLabel(r3, text="Baud:", anchor="w",
+                     font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 6))
+        e_hl_baud = ctk.CTkEntry(r3, width=70, placeholder_text="19200")
+        e_hl_baud.pack(side="left")
+        e_hl_baud.insert(0, str(dati.get('hamlib_baud', '') or ''))
+
+        def _hamlib_cfg():
+            return {
+                "host": e_hl_host.get().strip() or "127.0.0.1",
+                "port": (e_hl_port.get().strip() or "4532"),
+                "rigctld_path": e_hl_exe.get().strip(),
+                "modello": e_hl_model.get().strip(),
+                "porta_seriale": e_hl_ser.get().strip(),
+                "baud": e_hl_baud.get().strip(),
+                "avvio_auto": bool(var_hl_auto.get()),
+            }
         ctk.CTkLabel(fr_sdr, text=T("radio_sdr_nota"), anchor="w",
                      font=ctk.CTkFont(size=9), text_color="gray").pack(side="left", padx=(8,0))
 
@@ -8897,7 +8999,18 @@ class ADIFtoPDFApp(ctk.CTk):
 
         def _avvia_ora():
             _applica_percorsi()
-            ok = self._omnirig._avvia_omnirig_exe()
+            backend = var_backend.get()
+            ok = False
+            try:
+                if backend == "hamlib":
+                    if self._hamlib is None:
+                        self._hamlib = HamlibControl()
+                    self._hamlib.imposta(**_hamlib_cfg())
+                    ok = self._hamlib.connetti(avvia_se_serve=True)
+                else:
+                    ok = self._omnirig_reale._avvia_omnirig_exe()
+            except Exception:
+                ok = False
             lbl_stato.configure(
                 text=T("radio_avviato") if ok else T("radio_non_trovato"),
                 text_color="#38A169" if ok else "#E53E3E")
@@ -8909,7 +9022,8 @@ class ADIFtoPDFApp(ctk.CTk):
             # Applica la scelta di sorgente radio (OmniRig o SDR Console)
             backend = var_backend.get()
             porta_sdr = e_sdrport.get().strip() or "COM11"
-            self._imposta_backend_radio(backend, porta_sdr)
+            hl_cfg = _hamlib_cfg()
+            self._imposta_backend_radio(backend, porta_sdr, hl_cfg)
             try:
                 profili = self._carica_profili()
                 if self.profilo_attivo in profili:
@@ -8918,6 +9032,13 @@ class ADIFtoPDFApp(ctk.CTk):
                     profili[self.profilo_attivo]['omnirig_rigs_path'] = e_rigs.get().strip()
                     profili[self.profilo_attivo]['radio_backend'] = backend
                     profili[self.profilo_attivo]['sdr_porta'] = porta_sdr
+                    profili[self.profilo_attivo]['hamlib_host'] = hl_cfg['host']
+                    profili[self.profilo_attivo]['hamlib_port'] = hl_cfg['port']
+                    profili[self.profilo_attivo]['hamlib_rigctld_path'] = hl_cfg['rigctld_path']
+                    profili[self.profilo_attivo]['hamlib_modello'] = hl_cfg['modello']
+                    profili[self.profilo_attivo]['hamlib_porta_seriale'] = hl_cfg['porta_seriale']
+                    profili[self.profilo_attivo]['hamlib_baud'] = hl_cfg['baud']
+                    profili[self.profilo_attivo]['hamlib_avvio_auto'] = hl_cfg['avvio_auto']
                     with open(self.profili_path, 'w', encoding='utf-8') as f:
                         json.dump(profili, f, ensure_ascii=False, indent=2)
             except Exception:
@@ -8976,10 +9097,8 @@ class ADIFtoPDFApp(ctk.CTk):
         fr_test = ctk.CTkFrame(dlg, fg_color="transparent")
         fr_test.pack(fill="x", padx=20, pady=(8,4))
         ctk.CTkButton(fr_test, text=T("radio_test"), command=_test,
-                      fg_color="#4A5568", width=90).pack(side="left", padx=(0,4))
-        ctk.CTkButton(fr_test, text="📊 Monitor Split", command=_monitor_split,
-                      fg_color="#4A5568", width=120).pack(side="left", padx=(0,4))
-        ctk.CTkButton(fr_test, text=T("radio_avvia_ora"), command=_avvia_ora,
+                      fg_color="#4A5568", width=110).pack(side="left", padx=(0,6))
+        ctk.CTkButton(fr_test, text="Avvia ora", command=_avvia_ora,
                       fg_color=TH.PRIMARY, width=110).pack(side="left")
 
         fr_btn = ctk.CTkFrame(dlg, fg_color="transparent")
@@ -9430,7 +9549,16 @@ class ADIFtoPDFApp(ctk.CTk):
                     # Applica la sorgente radio salvata (OmniRig o SDR Console)
                     self._imposta_backend_radio(
                         dati.get('radio_backend', 'omnirig'),
-                        dati.get('sdr_porta', 'COM11'))
+                        dati.get('sdr_porta', 'COM11'),
+                        {
+                            "host": dati.get('hamlib_host', '127.0.0.1'),
+                            "port": dati.get('hamlib_port', 4532),
+                            "rigctld_path": dati.get('hamlib_rigctld_path', ''),
+                            "modello": dati.get('hamlib_modello', ''),
+                            "porta_seriale": dati.get('hamlib_porta_seriale', ''),
+                            "baud": dati.get('hamlib_baud', ''),
+                            "avvio_auto": dati.get('hamlib_avvio_auto', False),
+                        })
                     # Avvio automatico OmniRig: solo se il backend è OmniRig.
                     if (self._radio_backend == "omnirig"
                             and self._omnirig_reale.avvio_auto):
