@@ -1,0 +1,51 @@
+ADIF FZR 2.6 — compatibilità macOS (cross-platform)
+====================================================
+
+File modificati/aggiunti (stessi percorsi del repo, da sovrascrivere):
+
+1. utils/osutil.py  [NUOVO]
+   Helper apri_path(path): apre file/cartelle con l'app predefinita
+   dell'OS. Windows=os.startfile, macOS=`open`, Linux=`xdg-open`.
+   Evita il crash di os.startfile (che su macOS non esiste).
+
+2. gui/main_window.py
+   - import di apri_path; tutte le os.startfile(...) sostituite con
+     apri_path(...) (apertura di PDF/HTML/Cabrillo esportati).
+   - Aggiornamenti: l'auto-installazione (installer .exe/Inno + .bat) ora
+     è offerta SOLO su Windows. Su macOS/Linux la finestra "Aggiornamento
+     disponibile" mostra "Scarica dal sito" e apre la pagina di download.
+
+3. gui/dialogs/qsl_designer.py
+   - os.startfile(...) -> apri_path(...) (apertura PDF QSL / etichette).
+
+4. gui/dialogs/dashboard.py
+   - os.startfile(...) -> apri_path(...) (apertura PDF statistiche / report award).
+
+5. net/wsjtx_integra.py
+   - Rilevamento eseguibile WSJT-X su macOS: bundle .app in /Applications
+     e ~/Applications (/Contents/MacOS/wsjtx), più Homebrew/MacPorts.
+   - trova_installazioni(): scansione dei bundle *wsjt*.app su macOS.
+   - trova_config_dir() corretto per OS:
+       Windows: %LOCALAPPDATA%\WSJT-X
+       macOS:   ~/Library/Preferences
+       Linux:   ~/.config
+     (prima su Linux/mac finiva erroneamente in ~/.config/WSJT-X/).
+     Il file profilo resta "WSJT-X - ADIFFZR.ini" nella cartella giusta.
+   - L'avvio con DETACHED_PROCESS resta solo su Windows (già così).
+
+6. requirements.txt
+   - pywin32 reso condizionato: `pywin32; sys_platform == "win32"`
+     così `pip install -r requirements.txt` non fallisce su macOS/Linux.
+
+Note:
+- Il resto del codice era già cross-platform: OmniRig, Hamlib (rigctld),
+  DX Cluster (winsound->bell), registratore/decoder audio (WinMM) e le
+  liste dispositivi sono protetti da guardie os.name/sys.platform o
+  try/except, quindi su macOS degradano senza crash (l'audio WinMM resta
+  una funzione solo-Windows).
+- La versione in config.py è già "2.6": nessun bump necessario.
+
+Build macOS: con queste modifiche l'app parte e le funzioni comuni
+(export/apertura file, integrazione WSJT-X) funzionano su macOS. Il
+pacchetto .app/.dmg lo produce la GitHub Action su runner macOS
+(PyInstaller + icon.icns).

@@ -4,4 +4,4 @@ pillow
 adif_io
 openpyxl
 pyserial
-pywin32
+pywin32; sys_platform == "win32"
