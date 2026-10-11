@@ -17,6 +17,7 @@ from reportlab.lib import colors
 from config import T
 from utils.dxcc import dxcc_da_nominativo
 from utils.formatting import chiedi_cartella_output
+from utils.osutil import apri_path
 from gui.widgets import CalendarPopup
 import re
 from datetime import datetime
@@ -621,7 +622,7 @@ class QSLCardDesignerDialog(ctk.CTkToplevel):
                 f"PDF salvato con {len(qsos)} card{'s' if len(qsos)>1 else ''}.\n{save_path}",
                 parent=self)
             if os.path.exists(save_path):
-                try: os.startfile(save_path)
+                try: apri_path(save_path)
                 except Exception: pass
 
         except Exception as ex:
@@ -1544,11 +1545,12 @@ class QSLMasterDialog(ctk.CTkToplevel):
                   foreground=[("selected", "white")])
 
         cols = ("☑", "Data", "UTC", "Callsign", "Banda", "Modo",
-                "RST TX", "RST RX", "Country", "QSL_SENT")
+                "RST TX", "RST RX", "Country", "Conferma", "QSL_SENT")
         self.tree = ttk.Treeview(frame_tree, columns=cols,
                                   show="headings", style="QSL.Treeview")
         widths = {"☑":30,"Data":80,"UTC":55,"Callsign":90,"Banda":55,
-                  "Modo":55,"RST TX":50,"RST RX":50,"Country":160,"QSL_SENT":65}
+                  "Modo":55,"RST TX":50,"RST RX":50,"Country":150,
+                  "Conferma":78,"QSL_SENT":65}
         for col in cols:
             self.tree.heading(col, text=col)
             self.tree.column(col, width=widths.get(col,70), anchor="center")
@@ -1640,6 +1642,24 @@ class QSLMasterDialog(ctk.CTkToplevel):
         self._popola()
 
     # ── Selezione ─────────────────────────────────────
+    @staticmethod
+    def _stato_conferma(qso):
+        """Stato conferma del QSO: L=LoTW, E=eQSL, B=bureau/cartaceo (QSL_RCVD).
+        Ritorna le lettere confermate (es. 'L E') oppure '–' se nessuna."""
+        parti = []
+        lr = str(qso.get("lotw_qsl_rcvd","")).upper().strip()
+        ld = str(qso.get("lotw_qslrdate","")).strip()
+        if lr in ("Y","V") or (not lr and ld and ld != "00000000"):
+            parti.append("L")
+        er = str(qso.get("eqsl_qsl_rcvd","")).upper().strip()
+        ed = str(qso.get("eqsl_qslrdate","")).strip()
+        if er == "Y" or (not er and ed and ed != "00000000"):
+            parti.append("E")
+        pr = str(qso.get("qsl_rcvd","")).upper().strip()
+        if pr in ("Y","V"):
+            parti.append("B")
+        return " ".join(parti) if parti else "–"
+
     def _popola(self):
         self.tree.configure(selectmode="none")  # blocca eventi durante insert
         for item in self.tree.get_children():
@@ -1665,6 +1685,7 @@ class QSLMasterDialog(ctk.CTkToplevel):
                 str(qso.get("rst_sent","")),
                 str(qso.get("rst_rcvd","")),
                 str(qso.get("country","")).upper(),
+                self._stato_conferma(qso),
                 sent if sent else "-",
             ), tags=(tag,))
         self.tree.configure(selectmode="browse")  # riabilita eventi
@@ -1705,17 +1726,21 @@ class QSLMasterDialog(ctk.CTkToplevel):
         self._aggiorna_count()
 
     def _sel_tutti(self):
-        self._selected = set(self.qsos_tutti.index(q) for q in self._qso_filtrati)
+        self._selected = set(self._idx_map[id(q)] for q in self._qso_filtrati
+                             if id(q) in self._idx_map)
         self._popola()
 
     def _sel_nessuno(self):
         for q in self._qso_filtrati:
-            self._selected.discard(self.qsos_tutti.index(q))
+            i = self._idx_map.get(id(q))
+            if i is not None:
+                self._selected.discard(i)
         self._popola()
 
     def _inverti(self):
         for q in self._qso_filtrati:
-            i = self.qsos_tutti.index(q)
+            i = self._idx_map.get(id(q))
+            if i is None: continue
             if i in self._selected: self._selected.discard(i)
             else: self._selected.add(i)
         self._popola()
@@ -1738,7 +1763,8 @@ class QSLMasterDialog(ctk.CTkToplevel):
 
     def _sel_non_sent(self):
         for q in self._qso_filtrati:
-            i = self.qsos_tutti.index(q)
+            i = self._idx_map.get(id(q))
+            if i is None: continue
             if str(q.get("qsl_sent","")).upper().strip() != "Y":
                 self._selected.add(i)
             else:
@@ -2233,16 +2259,14 @@ class QSLMasterDialog(ctk.CTkToplevel):
             n = len(qsos_sel)
             fmt = self._formato_attivo()
             fogli = math.ceil(n / (fmt[2]*fmt[3]))
-            # Aggiorna QSL_SENT in memoria
+            # Aggiorna QSL_SENT in memoria — SOLO i QSO effettivamente in coda di stampa
             oggi = datetime.today().strftime("%Y%m%d")
             aggiunti = 0
-            calls_sel = set(str(q.get('call','')).upper().strip() for q in qsos_sel)
-            for q in self.qsos_tutti:
-                if str(q.get('call','')).upper().strip() in calls_sel:
-                    if str(q.get('qsl_sent','')).upper().strip() != 'Y':
-                        q['qsl_sent'] = 'Y'
-                        q.setdefault('qslsdate', oggi)
-                        aggiunti += 1
+            for q in qsos_sel:
+                if str(q.get('qsl_sent','')).upper().strip() != 'Y':
+                    q['qsl_sent'] = 'Y'
+                    q.setdefault('qslsdate', oggi)
+                    aggiunti += 1
             self._modifiche_pendenti = aggiunti > 0
             self._aggiorna_lbl_memoria()
             self._aggiorna_count()
@@ -2251,7 +2275,7 @@ class QSLMasterDialog(ctk.CTkToplevel):
             msg = f"PDF generato!\n{n} etichette su {fogli} fogli A4."
             if aggiunti: msg += f"\n{aggiunti} QSO aggiornati a QSL_SENT=Y"
             if messagebox.askyesno(T("successo"), msg + "\n\nAprire il file?"):
-                os.startfile(os.path.abspath(save_path))
+                apri_path((save_path))
         except Exception as ex:
             messagebox.showerror(T("errore"), f"Errore:\n{ex}")
 
@@ -2452,13 +2476,11 @@ class QSLMasterDialog(ctk.CTkToplevel):
             messagebox.showwarning(T("attenzione"), T("qsl_sel_nessuno_sel"))
             return
         oggi = datetime.today().strftime("%Y%m%d")
-        calls_sel = set(str(q.get('call','')).upper().strip() for q in qsos_sel)
         n = 0
-        for q in self.qsos_tutti:
-            if str(q.get('call','')).upper().strip() in calls_sel:
-                q['qsl_sent'] = 'Y'
-                q.setdefault('qslsdate', oggi)
-                n += 1
+        for q in qsos_sel:
+            q['qsl_sent'] = 'Y'
+            q.setdefault('qslsdate', oggi)
+            n += 1
 
         msg_chiedi = ("Vuoi aggiornare il file ADIF originale?"
                       "\n\nSI  = sovrascrive il file originale"
@@ -3021,7 +3043,7 @@ class QSLCardDialog(ctk.CTkToplevel):
             if aggiunti:
                 msg += f"\n\n" + T("qsl_stampati_msg", n=aggiunti)
             if messagebox.askyesno(T("successo"), msg):
-                os.startfile(os.path.abspath(save_path))
+                apri_path((save_path))
         except Exception as ex:
             messagebox.showerror(T("errore"), f"{T('qsl_errore')}{ex}")
 
