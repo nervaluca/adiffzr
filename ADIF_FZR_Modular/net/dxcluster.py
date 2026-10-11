@@ -23,6 +23,8 @@ class DXClusterWindow(ctk.CTkToplevel):
     filtri banda/modo, evidenzia DXCC nuovi, doppio click → Aggiungi QSO."""
 
     SERVERS = {
+        # ── Locale (skimmer sul tuo PC: CW Skimmer / Skimmer Server, Telnet 7300) ──
+        "🖥️ CW Skimmer (locale 7300)": ("127.0.0.1", 7300),
         # ── Italia ──
         "IK5PWJ-6 (Montecarlo LU)":  ("ik5pwj-6.dyndns.org", 8000),
         "IZ3MEZ (Italia)":           ("cluster.iz3mez.it", 8000),
@@ -65,7 +67,7 @@ class DXClusterWindow(ctk.CTkToplevel):
         self.geometry("980x620")
         self.minsize(760, 420)
         self.resizable(True, True)
-        self.configure(fg_color="#000000")   # sfondo scuro pulito, coerente col tree
+        self.configure(fg_color="#12181F")   # dark coerente con la tabella principale
         self.app_ref = app_ref
         # Porta in primo piano (evita che finisca dietro la finestra principale)
         self.transient(parent)
@@ -224,8 +226,8 @@ class DXClusterWindow(ctk.CTkToplevel):
         }
         for banda, col in colori_banda.items():
             self.tree.tag_configure(f"b_{banda}", foreground=col)
-        self.tree.tag_configure("nuovo_dxcc", background="#2D3A1F", foreground="#9AE6B4")
-        self.tree.tag_configure("nuovo_slot", background="#3A2E12", foreground="#F6C177")
+        self.tree.tag_configure("nuovo_dxcc", background="#17271c", foreground="#9AE6B4")
+        self.tree.tag_configure("nuovo_slot", background="#1b2634", foreground="#F6C177")
         self._aggiorna_box_bande()
         self._aggiorna_watch_chips()
         self.after(250, self._ticker_tick)
@@ -757,7 +759,7 @@ class DXClusterWindow(ctk.CTkToplevel):
         dopo un cambio tema globale dell'app, così il cluster non resta con lo
         stile ttk alterato (che prima lo faceva sembrare 'chiuso')."""
         try:
-            self.configure(fg_color="#000000")
+            self.configure(fg_color="#12181F")
         except Exception:
             pass
         try:
@@ -765,11 +767,21 @@ class DXClusterWindow(ctk.CTkToplevel):
             if st is None:
                 import tkinter.ttk as _ttk
                 st = self._ttk_style = _ttk.Style()
-            st.configure("DXC.Treeview", background="#000000", foreground="#E2E8F0",
-                         rowheight=22, fieldbackground="#000000", font=("Consolas", 10))
-            st.configure("DXC.Treeview.Heading", background="#1A365D",
-                         foreground="white", font=("Arial", 10, "bold"), relief="flat")
-            st.map("DXC.Treeview", background=[("selected", "#2B6CB0")])
+            # Su Windows il tema nativo ('vista') IGNORA lo sfondo del Treeview:
+            # senza un tema che onori i colori, la tabella appare di un colore
+            # 'strano' di sistema. 'clam' lo rispetta (stesso tema della tabella
+            # principale). Sfondo dark coerente col resto dell'app (#12181F).
+            try:
+                if st.theme_use() not in ("clam", "default", "alt"):
+                    st.theme_use("clam")
+            except Exception:
+                pass
+            st.configure("DXC.Treeview", background="#12181F", foreground="#DCE3EC",
+                         rowheight=22, fieldbackground="#12181F", font=("Consolas", 10))
+            st.configure("DXC.Treeview.Heading", background="#1E2A38",
+                         foreground="#9FB3C8", font=("Arial", 10, "bold"), relief="flat")
+            st.map("DXC.Treeview", background=[("selected", "#2B6CB0")],
+                   foreground=[("selected", "#FFFFFF")])
         except Exception:
             pass
 

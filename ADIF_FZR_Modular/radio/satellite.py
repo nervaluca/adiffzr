@@ -305,26 +305,91 @@ def cerchio_footprint(lat0, lon0, raggio_km, punti=90):
     return pts
 
 
-def traccia_passaggio(sat, aos_dt, los_dt, passi=60):
+def traccia_passaggio(sat, aos_dt, los_dt, passi=60, oss_lat=None, oss_lon=None):
     """Campiona la traccia del satellite durante il passaggio.
     Ritorna lista di dict: {t, lat, lon, alt_km, raggio_km}.
+    Se oss_lat/oss_lon sono dati, ogni campione ha anche 'az' ed 'el'
+    visti dall'osservatore (per lo sky plot polare).
     Utile per animare footprint + ground track sulla mappa."""
     if not SKYFIELD_OK or aos_dt is None or los_dt is None:
         return []
-    campioni = []
     durata = (los_dt - aos_dt).total_seconds()
     if durata <= 0:
         return []
-    from datetime import timedelta
-    for i in range(passi + 1):
-        t = aos_dt + timedelta(seconds=durata * i / passi)
-        sp = subpoint(sat, t)
-        if not sp:
-            continue
-        lat, lon, alt = sp
-        campioni.append({
-            "t": t, "lat": lat, "lon": lon,
-            "alt_km": round(alt, 1),
-            "raggio_km": round(raggio_footprint_km(alt), 0),
-        })
+    istanti = [aos_dt + timedelta(seconds=durata * i / passi) for i in range(passi + 1)]
+    try:
+        ts = _timescale()
+        t = ts.from_datetimes(istanti)
+        geo = sat.at(t)
+        sp = wgs84.subpoint(geo)
+        lats = sp.latitude.degrees
+        lons = sp.longitude.degrees
+        alts = sp.elevation.km
+        azs = els = None
+        if oss_lat is not None and oss_lon is not None:
+            oss = wgs84.latlon(oss_lat, oss_lon)
+            alt, az, _ = (sat - oss).at(t).altaz()
+            els, azs = alt.degrees, az.degrees
+    except Exception:
+        return []
+    campioni = []
+    for i, ti in enumerate(istanti):
+        c = {
+            "t": ti, "lat": float(lats[i]), "lon": float(lons[i]),
+            "alt_km": round(float(alts[i]), 1),
+            "raggio_km": round(raggio_footprint_km(float(alts[i])), 0),
+        }
+        if azs is not None:
+            c["az"] = float(azs[i])
+            c["el"] = float(els[i])
+        campioni.append(c)
     return campioni
+
+
+# ══════════════════════════════════════════════════════════════════
+#  TRACCIA ORBITA (mappa del cruscotto)
+# ══════════════════════════════════════════════════════════════════
+_TS = None
+
+
+def _timescale():
+    """Timescale skyfield condiviso: evita di ricrearlo a ogni chiamata."""
+    global _TS
+    if _TS is None:
+        _TS = load.timescale()
+    return _TS
+
+
+def traccia_orbita(sat, centro_dt, minuti_prima=10, minuti_dopo=95, passo_s=30):
+    """Ground track attorno a un istante: da 'minuti_prima' prima a
+    'minuti_dopo' dopo 'centro_dt' (circa un'orbita LEO in avanti).
+    Ritorna (passato, futuro): due liste di (lat, lon)."""
+    if not SKYFIELD_OK or sat is None or centro_dt is None:
+        return [], []
+    n_prima = max(1, int(minuti_prima * 60 / passo_s))
+    n_dopo = max(1, int(minuti_dopo * 60 / passo_s))
+    istanti = [centro_dt + timedelta(seconds=passo_s * k)
+               for k in range(-n_prima, n_dopo + 1)]
+    try:
+        t = _timescale().from_datetimes(istanti)
+        sp = wgs84.subpoint(sat.at(t))
+        lats = sp.latitude.degrees
+        lons = sp.longitude.degrees
+    except Exception:
+        return [], []
+    punti = [(float(lats[i]), float(lons[i])) for i in range(len(istanti))]
+    return punti[:n_prima + 1], punti[n_prima:]
+
+
+def azel_da(sat, lat, lon, quando_dt, elev_m=0.0):
+    """Azimut ed elevazione del satellite visti da (lat, lon) in un istante.
+    Ritorna (el, az, dist_km) o None."""
+    if not SKYFIELD_OK or sat is None:
+        return None
+    try:
+        oss = wgs84.latlon(lat, lon, elevation_m=elev_m)
+        t = _timescale().from_datetime(quando_dt)
+        alt, az, dist = (sat - oss).at(t).altaz()
+        return (float(alt.degrees), float(az.degrees), float(dist.km))
+    except Exception:
+        return None

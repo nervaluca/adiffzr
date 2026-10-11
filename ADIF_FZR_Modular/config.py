@@ -18,7 +18,7 @@ import math
 # titolo/barra di stato capisci a colpo d'occhio se un PC ha le
 # ultime modifiche (fine delle 'cartelle falocche' tra dev e radio).
 VERSIONE = "2.6"
-BUILD_DATE = "2026-09-01-1"
+BUILD_DATE = "2026-10-10-2"
 APP_TITOLO = "ADIF FZR " + VERSIONE
 PROGRAMID_ADIF = "ADIF_FZR_" + VERSIONE
 
@@ -1287,7 +1287,7 @@ TRADUZIONI = {
     "menu_dx_cluster":    {"IT": "📡 DX Cluster…", "EN": "📡 DX Cluster…"},
     "menu_wsjtx":         {"IT": "📻 WSJT-X Live…", "EN": "📻 WSJT-X Live…"},
     "menu_pers_colonne":  {"IT": "📋 Personalizza colonne…", "EN": "📋 Customize columns…"},
-    "menu_radio_omnirig": {"IT": "📻 Impostazioni radio / OmniRig…", "EN": "📻 Radio / OmniRig settings…"},
+    "menu_radio_omnirig": {"IT": "📻 Controllo radio (CAT)…", "EN": "📻 Rig control (CAT)…"},
     "menu_radio_display": {"IT": "📡 Display radio in tempo reale…", "EN": "📡 Live radio display…"},
     "rdisp_titolo":       {"IT": "📡 Radio", "EN": "📡 Radio"},
     "rdisp_attesa":       {"IT": "In attesa…", "EN": "Waiting…"},
@@ -1296,10 +1296,10 @@ TRADUZIONI = {
     "rdisp_logga":        {"IT": "📝 Logga questa frequenza", "EN": "📝 Log this frequency"},
     "rdisp_vfoa":         {"IT": "VFO-A  ·  RX", "EN": "VFO-A  ·  RX"},
     "rdisp_vfob":         {"IT": "VFO-B  ·  TX", "EN": "VFO-B  ·  TX"},
-    "radio_titolo":       {"IT": "📻 Impostazioni radio / OmniRig", "EN": "📻 Radio / OmniRig settings"},
-    "radio_head":         {"IT": "📻 Controllo radio via OmniRig", "EN": "📻 Radio control via OmniRig"},
-    "radio_sub":          {"IT": "OmniRig permette il controllo della radio (QSY da spot, lettura frequenza/modo). Se i percorsi restano vuoti, l'app cerca OmniRig automaticamente.",
-                           "EN": "OmniRig enables rig control (QSY from spots, read frequency/mode). If paths are left empty, the app searches for OmniRig automatically."},
+    "radio_titolo":       {"IT": "📻 Controllo radio (CAT) — OmniRig · Hamlib · SDR Console", "EN": "📻 Rig control (CAT) — OmniRig · Hamlib · SDR Console"},
+    "radio_head":         {"IT": "📻 Controllo radio via CAT", "EN": "📻 Radio control via CAT"},
+    "radio_sub":          {"IT": "Il controllo CAT (OmniRig, Hamlib o SDR Console) permette QSY da spot e lettura di frequenza/modo. Se i percorsi restano vuoti, l'app cerca il backend automaticamente.",
+                           "EN": "CAT control (OmniRig, Hamlib or SDR Console) enables QSY from spots and reading frequency/mode. If paths are left empty, the app searches for the backend automatically."},
     "radio_avvio_auto":   {"IT": "Avvia OmniRig automaticamente all'apertura dell'app", "EN": "Start OmniRig automatically when the app opens"},
     "radio_sorgente_lbl": {"IT": "Sorgente radio:", "EN": "Radio source:"},
     "radio_sdr_porta":    {"IT": "Porta SDR Console:", "EN": "SDR Console port:"},
@@ -1690,8 +1690,25 @@ TRADUZIONI = {
     "sync_hint":         {"IT": "Scegli cosa sincronizzare: verranno aperte in sequenza le finestre dei servizi selezionati (con le loro conferme).", "EN": "Choose what to sync: the selected services' windows will open in sequence (with their confirmations)."},
     "sync_grp_up":       {"IT": "Carica su (upload)", "EN": "Upload to"},
     "sync_grp_dl":       {"IT": "Scarica da (download)", "EN": "Download from"},
-    "sync_avvia":        {"IT": "▶ Avvia", "EN": "▶ Start"},
+    "sync_avvia":        {"IT": "▶ Avvia sync", "EN": "▶ Start sync"},
     "sync_nessuno":      {"IT": "Seleziona almeno una voce.", "EN": "Select at least one item."},
+    "sync_hint2":        {"IT": "Carica i QSO sui servizi selezionati: una sola finestra, con l'avanzamento di ciascuno.", "EN": "Upload your QSOs to the selected services: a single window, with each service's progress."},
+    "sync_ambito":       {"IT": "AMBITO", "EN": "SCOPE"},
+    "sync_scope_tutti":  {"IT": "Tutti i QSO visibili ({n})", "EN": "All visible QSOs ({n})"},
+    "sync_scope_coda":   {"IT": "Solo la coda ({n})", "EN": "Queue only ({n})"},
+    "sync_non_config":   {"IT": "non configurato in questo profilo", "EN": "not configured in this profile"},
+    "sync_avanzamento":  {"IT": "Avanzamento totale", "EN": "Overall progress"},
+    "sync_finito":       {"IT": "Completato", "EN": "Done"},
+    "sync_in_corso":     {"IT": "in corso…", "EN": "in progress…"},
+    "sync_annullato":    {"IT": "annullato", "EN": "cancelled"},
+    "sync_invio":        {"IT": "invio {n}/{tot}…", "EN": "sending {n}/{tot}…"},
+    "sync_invio_adif":   {"IT": "invio ADIF in corso…", "EN": "sending ADIF…"},
+    "sync_invio_tqsl":   {"IT": "firma e invio via TQSL…", "EN": "signing & sending via TQSL…"},
+    "sync_riep_updup":   {"IT": "{ok} caricati · {dup} duplicati · {err} errori", "EN": "{ok} uploaded · {dup} dupes · {err} errors"},
+    "sync_riep_okerr":   {"IT": "{ok} caricati · {err} errori", "EN": "{ok} uploaded · {err} errors"},
+    "sync_riep_eqsl":    {"IT": "{add} di {tot} aggiunti", "EN": "{add} of {tot} added"},
+    "sync_qo100_nessuno": {"IT": "nessun QSO via QO-100 nell'ambito", "EN": "no QO-100 QSOs in scope"},
+    "sync_download_hint": {"IT": "Download con opzioni (anno, campi, anteprima):", "EN": "Downloads with options (year, fields, preview):"},
     "eqd_titolo":            {"IT": "Scarica ADIF da eQSL.cc", "EN": "Download ADIF from eQSL.cc"},
     "eqd_no_config":         {"IT": "Configura prima Username e Password eQSL nel profilo operatore.",
                                "EN": "Configure eQSL Username and Password in the operator profile first."},
